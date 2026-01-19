@@ -20,7 +20,7 @@ A 3D Earth visualization built with Babylon.js, TypeScript, and Webpack.
 ### Prerequisites
 
 - Node.js 18+ (recommended: 20+)
-- npm or yarn
+- pnpm (`npm install -g pnpm`)
 
 ### Installation
 
@@ -30,7 +30,7 @@ git clone <your-repo-url>
 cd earth
 
 # Install dependencies
-npm install
+pnpm install
 ```
 
 ### Development
@@ -38,7 +38,7 @@ npm install
 Start the development server with hot reload:
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
 The app will open at [http://localhost:3000](http://localhost:3000)
@@ -90,7 +90,7 @@ This project includes automated deployment to GitHub Pages:
 To deploy manually to any static hosting:
 
 ```bash
-npm run build
+pnpm build
 # Upload the contents of dist/ to your hosting provider
 ```
 
@@ -98,9 +98,9 @@ npm run build
 
 | Script | Description |
 |--------|-------------|
-| `npm run dev` | Start development server |
-| `npm run build` | Create production build |
-| `npm run clean` | Remove dist folder |
+| `pnpm dev` | Start development server |
+| `pnpm build` | Create production build |
+| `pnpm clean` | Remove dist folder |
 
 ## Customization
 

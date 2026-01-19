@@ -171,7 +171,7 @@ export class Game {
       // Random spherical distribution
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
-      const radius = 50 + Math.random() * 50;
+      const radius = 1000;
 
       const x = radius * Math.sin(phi) * Math.cos(theta);
       const y = radius * Math.sin(phi) * Math.sin(theta);
@@ -201,7 +201,7 @@ export class Game {
                 positions[i + 1],
                 positions[i + 2]
               );
-              acc.push([point, point.add(new Vector3(0.01, 0.01, 0.01))]);
+              acc.push([point, point.add(new Vector3(0.5, 0.5, 0.5))]);
             }
             return acc;
           }, []),
