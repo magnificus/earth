@@ -1,0 +1,36 @@
+{
+  "name": "babylon-earth",
+  "version": "1.0.0",
+  "description": "Babylon.js project with TypeScript and Webpack",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "webpack serve --mode development",
+    "build": "webpack --mode production",
+    "lint": "eslint src/**/*.ts",
+    "clean": "rimraf dist"
+  },
+  "keywords": [
+    "babylonjs",
+    "typescript",
+    "3d",
+    "webgl"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "copy-webpack-plugin": "^11.0.0",
+    "html-webpack-plugin": "^5.6.0",
+    "rimraf": "^5.0.5",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^4.15.1"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^7.0.0",
+    "@babylonjs/loaders": "^7.0.0",
+    "@babylonjs/materials": "^7.0.0"
+  }
+}
