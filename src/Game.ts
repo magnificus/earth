@@ -52,14 +52,13 @@ export class Game {
     // Create lights
     const hemisphericLight = new HemisphericLight(
       'hemisphericLight',
-      new Vector3(0, 1, 0),
+      new Vector3(1, 1, 0),
       this.scene
     );
     hemisphericLight.intensity = 0.3;
     hemisphericLight.groundColor = new Color3(0.1, 0.1, 0.2);
 
-    // Create the Earth sphere
-    const earth = await this.createHeightmapMesh('terrain', 'assets/Heightmap.png', {
+    const earth = await this.createHeightmapMesh('terrain', 'assets/heightmaps/Oslo%20height.png', {
       width: 20,
       height: 20,
       subdivisions: 150,
@@ -68,28 +67,11 @@ export class Game {
     });
     // Create Earth material
     const earthMaterial = new StandardMaterial('earthMaterial', this.scene);
-    earthMaterial.diffuseColor = new Color3(0.2, 0.4, 0.8);
+    earthMaterial.diffuseColor = new Color3(0.2, 0.8, 0.5);
     earthMaterial.specularColor = new Color3(0.3, 0.3, 0.5);
     earthMaterial.specularPower = 32;
     earthMaterial.emissiveColor = new Color3(0.05, 0.1, 0.2);
     earth.material = earthMaterial;
-
-    // Add rotation animation to Earth
-    const rotationAnimation = new Animation(
-      'earthRotation',
-      'rotation.y',
-      30,
-      Animation.ANIMATIONTYPE_FLOAT,
-      Animation.ANIMATIONLOOPMODE_CYCLE
-    );
-
-    const rotationKeys = [
-      { frame: 0, value: 0 },
-      { frame: 1000, value: Math.PI * 2 },
-    ];
-    rotationAnimation.setKeys(rotationKeys);
-    earth.animations.push(rotationAnimation);
-    this.scene.beginAnimation(earth, 0, 1000, true);
   }
 
   run(): void {
