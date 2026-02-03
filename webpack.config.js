@@ -37,13 +37,19 @@ module.exports = (env, argv) => {
             to: '',
             noErrorOnMissing: true,
           },
+          {
+            from: 'assets',
+            to: 'assets',
+            noErrorOnMissing: true,
+          },
         ],
       }),
     ],
     devServer: {
-      static: {
-        directory: path.join(__dirname, 'public'),
-      },
+      static: [
+        { directory: path.join(__dirname, 'public') },
+        { directory: path.join(__dirname, 'assets'), publicPath: '/assets' },
+      ],
       compress: true,
       port: 3000,
       hot: true,
