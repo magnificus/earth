@@ -79,17 +79,25 @@ export class Game {
 
     // Oslo coordinates: 59.91°N, 10.75°E
     // Zoom 10 covers roughly 40km x 40km area
-    const heightmap = await TerrainTiles.fetchTileAtLocation(59.93, 10.738, 10);
+    const heightmap = await TerrainTiles.fetchTileAtLocation(60, 10.738, 10);
     
     // Download the heightmap to disk
     TerrainTiles.downloadHeightmap(heightmap, 'oslo_heightmap.png');
     
+    // Scale real-world elevation to scene units
+    // e.g., 1 scene unit = 100 meters
+    const metersPerUnit = 100;
+    const elevationRange = heightmap.maxElevation - heightmap.minElevation;
+    const maxHeight = elevationRange / metersPerUnit;
+    
+    console.log(`Elevation: ${heightmap.minElevation.toFixed(0)}m - ${heightmap.maxElevation.toFixed(0)}m (range: ${elevationRange.toFixed(0)}m, scaled: ${maxHeight.toFixed(2)} units)`);
+    
     const terrain = await this.createHeightmapMesh('terrain', heightmap.dataUrl, {
-      width: 20,
-      height: 20,
+      width: 100,
+      height: 100,
       subdivisions: 500,
       minHeight: 0,
-      maxHeight: 5,
+      maxHeight,
     });
   }
 
