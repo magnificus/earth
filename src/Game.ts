@@ -1,7 +1,7 @@
 import {
   Engine,
   Scene,
-  ArcRotateCamera,
+  UniversalCamera,
   Vector3,
   HemisphericLight,
   PointLight,
@@ -13,7 +13,9 @@ import {
   PolygonMeshBuilder,
   Mesh,
   Texture,
+  KeyboardEventTypes,
 } from '@babylonjs/core';
+import { TerrainTiles } from './TerrainTiles';
 
 export class Game {
   private canvas: HTMLCanvasElement;
@@ -34,20 +36,37 @@ export class Game {
     // Set scene background
     this.scene.clearColor = new Color4(0.02, 0.02, 0.05, 1);
 
-    // Create camera
-    const camera = new ArcRotateCamera(
+    // Create fly camera with WASD controls
+    const camera = new UniversalCamera(
       'camera',
-      Math.PI / 2,
-      Math.PI / 2.5,
-      10,
-      Vector3.Zero(),
+      new Vector3(0, 5, -15),
       this.scene
     );
+    camera.setTarget(Vector3.Zero());
     camera.attachControl(this.canvas, true);
-    camera.lowerRadiusLimit = 3;
-    camera.upperRadiusLimit = 20;
-    camera.wheelPrecision = 50;
-    camera.panningSensibility = 0;
+
+    // WASD keys for movement (W=87, A=65, S=83, D=68)
+    camera.keysUp = [87];    // W
+    camera.keysDown = [83];  // S
+    camera.keysLeft = [65];  // A
+    camera.keysRight = [68]; // D
+
+    // Movement speed
+    camera.speed = 0.5;
+    camera.angularSensibility = 1000;
+
+    // Add Q/E for vertical movement
+    const verticalSpeed = 0.2;
+    this.scene.onKeyboardObservable.add((kbInfo) => {
+      if (kbInfo.type === KeyboardEventTypes.KEYDOWN) {
+        if (kbInfo.event.key === 'q' || kbInfo.event.key === 'Q') {
+          camera.position.y -= verticalSpeed;
+        }
+        if (kbInfo.event.key === 'e' || kbInfo.event.key === 'E') {
+          camera.position.y += verticalSpeed;
+        }
+      }
+    });
 
     // Create lights
     const hemisphericLight = new HemisphericLight(
@@ -58,20 +77,20 @@ export class Game {
     hemisphericLight.intensity = 0.3;
     hemisphericLight.groundColor = new Color3(0.1, 0.1, 0.2);
 
-    const earth = await this.createHeightmapMesh('terrain', 'assets/heightmaps/Oslo%20height.png', {
+    // Oslo coordinates: 59.91°N, 10.75°E
+    // Zoom 10 covers roughly 40km x 40km area
+    const heightmap = await TerrainTiles.fetchTileAtLocation(59.93, 10.738, 10);
+    
+    // Download the heightmap to disk
+    TerrainTiles.downloadHeightmap(heightmap, 'oslo_heightmap.png');
+    
+    const terrain = await this.createHeightmapMesh('terrain', heightmap.dataUrl, {
       width: 20,
       height: 20,
-      subdivisions: 150,
+      subdivisions: 500,
       minHeight: 0,
-      maxHeight: 3,
+      maxHeight: 5,
     });
-    // Create Earth material
-    const earthMaterial = new StandardMaterial('earthMaterial', this.scene);
-    earthMaterial.diffuseColor = new Color3(0.2, 0.8, 0.5);
-    earthMaterial.specularColor = new Color3(0.3, 0.3, 0.5);
-    earthMaterial.specularPower = 32;
-    earthMaterial.emissiveColor = new Color3(0.05, 0.1, 0.2);
-    earth.material = earthMaterial;
   }
 
   run(): void {
@@ -134,7 +153,7 @@ export class Game {
 
       // Apply a default material
       const groundMaterial = new StandardMaterial(`${name}Material`, this.scene);
-      groundMaterial.diffuseColor = new Color3(0.4, 0.6, 0.3);
+      groundMaterial.diffuseColor = new Color3(0.4, 0.9, 0.6);
       groundMaterial.specularColor = new Color3(0.1, 0.1, 0.1);
       ground.material = groundMaterial;
     });
