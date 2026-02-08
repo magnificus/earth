@@ -12,6 +12,7 @@ import {
   KeyboardEventTypes,
 } from '@babylonjs/core';
 import { TerrainTiles } from './TerrainTiles';
+import { createWaterPlane } from './Water';
 
 export class Game {
   private canvas: HTMLCanvasElement;
@@ -74,7 +75,7 @@ export class Game {
     hemisphericLight.groundColor = new Color3(0.1, 0.1, 0.2);
 
     // Oslo coordinates: 59.91°N, 10.75°E
-    const heightmap = await TerrainTiles.fetchTileAtLocation(59.8833298, 10.6166642, 11);
+    const heightmap = await TerrainTiles.fetchTileAtLocation(59.904706664625266, 10.61104958556299, 14);
     
     // Download the heightmap to disk
     //TerrainTiles.downloadHeightmap(heightmap, 'oslo_heightmap.png');
@@ -94,6 +95,9 @@ export class Game {
       minHeight: 0,
       maxHeight,
     });
+
+    // Create water plane at 0 meters elevation
+    createWaterPlane(this.scene, [terrain]);
   }
 
   run(): void {
