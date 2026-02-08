@@ -4,15 +4,11 @@ import {
   UniversalCamera,
   Vector3,
   HemisphericLight,
-  PointLight,
   MeshBuilder,
   StandardMaterial,
   Color3,
   Color4,
-  Animation,
-  PolygonMeshBuilder,
   Mesh,
-  Texture,
   KeyboardEventTypes,
 } from '@babylonjs/core';
 import { TerrainTiles } from './TerrainTiles';
@@ -74,15 +70,14 @@ export class Game {
       new Vector3(1, 1, 0),
       this.scene
     );
-    hemisphericLight.intensity = 0.3;
+    hemisphericLight.intensity = 1.0;
     hemisphericLight.groundColor = new Color3(0.1, 0.1, 0.2);
 
     // Oslo coordinates: 59.91°N, 10.75°E
-    // Zoom 10 covers roughly 40km x 40km area
-    const heightmap = await TerrainTiles.fetchTileAtLocation(60, 10.738, 10);
+    const heightmap = await TerrainTiles.fetchTileAtLocation(59.8833298, 10.6166642, 11);
     
     // Download the heightmap to disk
-    TerrainTiles.downloadHeightmap(heightmap, 'oslo_heightmap.png');
+    //TerrainTiles.downloadHeightmap(heightmap, 'oslo_heightmap.png');
     
     // Scale real-world elevation to scene units
     // e.g., 1 scene unit = 100 meters
