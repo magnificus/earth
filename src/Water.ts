@@ -29,7 +29,7 @@ export function createWaterPlane(
     width = 100,
     height = 100,
     subdivisions = 64,
-    elevation = -0.2,
+    elevation = 0.0,
   } = options;
 
   // Extend slightly beyond the terrain to avoid edge clipping artifacts
@@ -56,8 +56,8 @@ export function createWaterPlane(
   // Color & blending — higher blend factors mask the black refraction edge at the shoreline
   water.waterColor = new Color3(0.05, 0.2, 0.4);
   water.waterColor2 = new Color3(0.0, 0.1, 0.25);
-  water.colorBlendFactor = 1.0;
-  water.colorBlendFactor2 = 1.0;
+  water.colorBlendFactor = 0.95;
+  water.colorBlendFactor2 = 0.95;
 
   // Add meshes to the water's render list for reflections/refractions
   for (const mesh of renderListMeshes) {

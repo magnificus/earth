@@ -80,8 +80,8 @@ export class TerrainTiles {
   ): HeightmapResult {
     // Push sea-level (0m) elevations down to create a visible coastline drop
     for (let i = 0; i < elevations.length; i++) {
-      if (elevations[i] <= 0.01) {
-        elevations[i] = -100;
+      if (elevations[i] <= 0.0) {
+        elevations[i] = -10;
       }
     }
 

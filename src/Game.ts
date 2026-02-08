@@ -100,7 +100,7 @@ export class Game {
 
     // Multiplier for mesh subdivisions relative to source image pixels.
     // 1 = one vertex per pixel, 0.5 = half resolution, 2 = double, etc.
-    const subdivisionMultiplier = 1;
+    const subdivisionMultiplier = 2;
     const subdivisions = Math.max(1, Math.round(heightmap.width * subdivisionMultiplier));
 
     console.log(`Heightmap: ${heightmap.width}×${heightmap.height}px → ${subdivisions} subdivisions (×${subdivisionMultiplier})`);
