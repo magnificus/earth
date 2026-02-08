@@ -80,7 +80,7 @@ export class TerrainTiles {
   ): HeightmapResult {
     // Push sea-level (0m) elevations down to create a visible coastline drop
     for (let i = 0; i < elevations.length; i++) {
-      if (elevations[i] <= 0.5) {
+      if (elevations[i] <= 0.01) {
         elevations[i] = -100;
       }
     }
@@ -214,7 +214,21 @@ export class TerrainTiles {
       }
     }
 
-    return this.elevationsToHeightmap(stitched, stitchedSize, stitchedSize, { z: zoom, x: tileX, y: tileY });
+    // Compute real-world ground extent of the stitched 2×2 area
+    const topLeftBounds = this.tileBounds(startX, startY, zoom);
+    const bottomRightBounds = this.tileBounds(startX + 1, startY + 1, zoom);
+    const stitchedBounds: TileBounds = {
+      lonWest: topLeftBounds.lonWest,
+      lonEast: bottomRightBounds.lonEast,
+      latNorth: topLeftBounds.latNorth,
+      latSouth: bottomRightBounds.latSouth,
+    };
+    const { widthMeters, heightMeters } = this.tileSizeMeters(stitchedBounds);
+
+    const result = this.elevationsToHeightmap(stitched, stitchedSize, stitchedSize, { z: zoom, x: tileX, y: tileY });
+    result.groundWidthMeters = widthMeters;
+    result.groundHeightMeters = heightMeters;
+    return result;
   }
 
   /**
@@ -285,4 +299,8 @@ export interface HeightmapResult {
   height: number;
   /** Tile coordinates */
   tile: { z: number; x: number; y: number };
+  /** Real-world ground width in meters (if available) */
+  groundWidthMeters?: number;
+  /** Real-world ground height in meters (if available) */
+  groundHeightMeters?: number;
 }

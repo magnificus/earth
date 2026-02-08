@@ -75,24 +75,41 @@ export class Game {
     hemisphericLight.groundColor = new Color3(0.1, 0.1, 0.2);
 
     // Oslo coordinates: 59.91°N, 10.75°E
-    const heightmap = await TerrainTiles.fetchTileAtLocation(59.904706664625266, 10.61104958556299, 14);
+    const storyodden = { lat: 59.8888085995981, lon: 10.593090176648504 };
+    const casa = { lat: 59.904706664625266, lon: 10.61104958556299 };
+    //casa =  59.904706664625266, 10.61104958556299;
+    const heightmap = await TerrainTiles.fetchTileAtLocation(storyodden.lat, storyodden.lon, 15);
     
     // Download the heightmap to disk
     //TerrainTiles.downloadHeightmap(heightmap, 'oslo_heightmap.png');
     
-    // Scale real-world elevation to scene units
-    // e.g., 1 scene unit = 100 meters
-    const metersPerUnit = 100;
-    const elevationRange = heightmap.maxElevation - heightmap.minElevation;
-    const maxHeight = elevationRange / metersPerUnit;
-    
-    console.log(`Elevation: ${heightmap.minElevation.toFixed(0)}m - ${heightmap.maxElevation.toFixed(0)}m (range: ${elevationRange.toFixed(0)}m, scaled: ${maxHeight.toFixed(2)} units)`);
-    
+    // Derive meters-per-unit from the real ground extent so
+    // horizontal and vertical scales match 1:1 (absolute height).
+    const meshWidth = 100;   // scene units for the ground plane
+    const groundWidth = heightmap.groundWidthMeters ?? 1000;
+    const groundHeight = heightmap.groundHeightMeters ?? 1000;
+    const metersPerUnit = groundWidth / meshWidth;
+    const meshDepth = groundHeight / metersPerUnit; // may differ slightly from meshWidth due to latitude
+
+    // Absolute elevation mapped to the same scale
+    const minHeight = heightmap.minElevation / metersPerUnit;
+    const maxHeight = heightmap.maxElevation / metersPerUnit;
+
+    console.log(`Ground extent: ${groundWidth.toFixed(0)}m × ${groundHeight.toFixed(0)}m → ${meshWidth} × ${meshDepth.toFixed(2)} units (1 unit = ${metersPerUnit.toFixed(1)}m)`);
+    console.log(`Elevation: ${heightmap.minElevation.toFixed(0)}m – ${heightmap.maxElevation.toFixed(0)}m → ${minHeight.toFixed(2)} – ${maxHeight.toFixed(2)} units`);
+
+    // Multiplier for mesh subdivisions relative to source image pixels.
+    // 1 = one vertex per pixel, 0.5 = half resolution, 2 = double, etc.
+    const subdivisionMultiplier = 1;
+    const subdivisions = Math.max(1, Math.round(heightmap.width * subdivisionMultiplier));
+
+    console.log(`Heightmap: ${heightmap.width}×${heightmap.height}px → ${subdivisions} subdivisions (×${subdivisionMultiplier})`);
+
     const terrain = await this.createHeightmapMesh('terrain', heightmap.dataUrl, {
-      width: 100,
-      height: 100,
-      subdivisions: 500,
-      minHeight: 0,
+      width: meshWidth,
+      height: meshDepth,
+      subdivisions,
+      minHeight,
       maxHeight,
     });
 
