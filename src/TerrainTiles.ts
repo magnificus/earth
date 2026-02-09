@@ -65,25 +65,97 @@ export class TerrainTiles {
   }
 
   /**
-   * Converts raw elevation data into a normalized grayscale heightmap.
-   * @param elevations - Raw elevation values
-   * @param width - Image width in pixels
-   * @param height - Image height in pixels
-   * @param tile - Tile coordinates for metadata
-   * @returns HeightmapResult with data URL and elevation info
+   * Iteratively deepens water pixels. Each pass: if all 8 neighbours
+   * are at the same height or lower, decrease the elevation by `step`.
+   * Only affects pixels that started below sea level.
+   * Pixels next to higher ground (land or shallower water) are held in place,
+   * so depth naturally increases the further you get from shore.
    */
-  private static elevationsToHeightmap(
+  private static applyWaterDepth(
     elevations: Float32Array,
     width: number,
     height: number,
-    tile: { z: number; x: number; y: number }
-  ): HeightmapResult {
-    // Push sea-level (0m) elevations down to create a visible coastline drop
+    passes: number = 100,
+    step: number = 1
+  ): void {
+    // Mark original water pixels (only these will be modified)
+    const isWater = new Uint8Array(elevations.length);
     for (let i = 0; i < elevations.length; i++) {
-      if (elevations[i] <= 0.0) {
-        elevations[i] = -10;
+      isWater[i] = elevations[i] <= 0 ? 1 : 0;
+      // Start all water at 0
+      if (isWater[i]) elevations[i] = 0;
+    }
+
+    // Deepening passes
+    for (let pass = 0; pass < passes; pass++) {
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const i = y * width + x;
+          if (!isWater[i]) continue;
+
+          // Check all 8 neighbours — if any is higher, skip
+          const h = elevations[i];
+          let allSameOrLower = true;
+
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const ny = y + dy;
+              const nx = x + dx;
+              if (ny < 0 || ny >= height || nx < 0 || nx >= width) continue;
+              if (elevations[ny * width + nx] > h) {
+                allSameOrLower = false;
+                break;
+              }
+            }
+            if (!allSameOrLower) break;
+          }
+
+          if (allSameOrLower) {
+            elevations[i] -= step;
+          }
+        }
       }
     }
+
+    // Smoothing passes — average each water pixel with its neighbours
+    const smoothPasses = 10;
+    for (let pass = 0; pass < smoothPasses; pass++) {
+      const copy = new Float32Array(elevations);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const i = y * width + x;
+          if (!isWater[i]) continue;
+
+          let sum = 0;
+          let count = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const ny = y + dy;
+              const nx = x + dx;
+              if (ny < 0 || ny >= height || nx < 0 || nx >= width) continue;
+              sum += copy[ny * width + nx];
+              count++;
+            }
+          }
+          elevations[i] = sum / count;
+        }
+      }
+    }
+  }
+
+  /**
+   * Processes raw elevation data: applies coastal slopes, computes min/max,
+   * and returns the full-precision Float32Array for direct vertex use.
+   */
+  private static processElevations(
+    elevations: Float32Array,
+    width: number,
+    height: number,
+    tile: { z: number; x: number; y: number },
+  ): TerrainResult {
+    // Iteratively deepen water pixels
+    this.applyWaterDepth(elevations, width, height, 100, 1);
 
     let minElevation = Infinity;
     let maxElevation = -Infinity;
@@ -92,41 +164,22 @@ export class TerrainTiles {
       if (elevations[i] > maxElevation) maxElevation = elevations[i];
     }
 
-    const range = maxElevation - minElevation || 1;
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d')!;
-    const outputData = ctx.createImageData(width, height);
-
-    for (let i = 0; i < elevations.length; i++) {
-      const normalized = Math.floor(((elevations[i] - minElevation) / range) * 255);
-      const pi = i * 4;
-      outputData.data[pi] = normalized;       // R
-      outputData.data[pi + 1] = normalized;   // G
-      outputData.data[pi + 2] = normalized;   // B
-      outputData.data[pi + 3] = 255;          // A
-    }
-
-    ctx.putImageData(outputData, 0, 0);
-    const dataUrl = canvas.toDataURL('image/png');
-
     console.log(`Terrain tile ${tile.z}/${tile.x}/${tile.y}: elevation range ${minElevation.toFixed(1)}m to ${maxElevation.toFixed(1)}m`);
 
-    return { dataUrl, minElevation, maxElevation, width, height, tile };
+    return { elevations, minElevation, maxElevation, width, height, tile };
   }
 
   /**
-   * Fetches a Terrarium elevation tile from AWS and converts it to a grayscale heightmap.
+   * Fetches a Terrarium elevation tile from AWS and returns processed terrain data.
    * Terrarium format encodes elevation as: height = (R × 256 + G + B/256) - 32768
    * @param z - Zoom level (0-15)
    * @param x - Tile X coordinate
    * @param y - Tile Y coordinate
-   * @returns Promise that resolves to heightmap result with data URL and elevation info
+   * @returns Promise that resolves to terrain result with raw elevation data
    */
-  static async fetchTile(z: number, x: number, y: number): Promise<HeightmapResult> {
+  static async fetchTile(z: number, x: number, y: number): Promise<TerrainResult> {
     const raw = await this.loadTileElevations(z, x, y);
-    return this.elevationsToHeightmap(raw.elevations, raw.width, raw.height, { z, x, y });
+    return this.processElevations(raw.elevations, raw.width, raw.height, { z, x, y });
   }
 
   /**
@@ -169,9 +222,9 @@ export class TerrainTiles {
    * @param lat - Latitude in degrees
    * @param lon - Longitude in degrees
    * @param zoom - Zoom level (0-15, higher = more detail, smaller area)
-   * @returns Promise that resolves to heightmap result centered on the coordinate
+   * @returns Promise that resolves to terrain result centered on the coordinate
    */
-  static async fetchTileAtLocation(lat: number, lon: number, zoom: number): Promise<HeightmapResult> {
+  static async fetchTileAtLocation(lat: number, lon: number, zoom: number): Promise<TerrainResult> {
     const n = Math.pow(2, zoom);
 
     // Compute fractional tile coordinates
@@ -225,27 +278,48 @@ export class TerrainTiles {
     };
     const { widthMeters, heightMeters } = this.tileSizeMeters(stitchedBounds);
 
-    const result = this.elevationsToHeightmap(stitched, stitchedSize, stitchedSize, { z: zoom, x: tileX, y: tileY });
+    const result = this.processElevations(stitched, stitchedSize, stitchedSize, { z: zoom, x: tileX, y: tileY });
     result.groundWidthMeters = widthMeters;
     result.groundHeightMeters = heightMeters;
     return result;
   }
 
   /**
-   * Downloads the heightmap as a PNG file.
-   * @param result - The heightmap result from fetchTile
+   * Downloads the terrain as a grayscale PNG heightmap file.
+   * Generates the image on-demand from the raw elevation data.
+   * @param result - The terrain result from fetchTile
    * @param filename - Optional filename (defaults to tile coordinates)
    */
-  static downloadHeightmap(result: HeightmapResult, filename?: string): void {
+  static downloadHeightmap(result: TerrainResult, filename?: string): void {
     const name = filename || `heightmap_${result.tile.z}_${result.tile.x}_${result.tile.y}.png`;
-    
+
+    const { elevations, width, height, minElevation, maxElevation } = result;
+    const range = maxElevation - minElevation || 1;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d')!;
+    const outputData = ctx.createImageData(width, height);
+
+    for (let i = 0; i < elevations.length; i++) {
+      const normalized = Math.floor(((elevations[i] - minElevation) / range) * 255);
+      const pi = i * 4;
+      outputData.data[pi] = normalized;
+      outputData.data[pi + 1] = normalized;
+      outputData.data[pi + 2] = normalized;
+      outputData.data[pi + 3] = 255;
+    }
+
+    ctx.putImageData(outputData, 0, 0);
+    const dataUrl = canvas.toDataURL('image/png');
+
     const link = document.createElement('a');
     link.download = name;
-    link.href = result.dataUrl;
+    link.href = dataUrl;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    
+
     console.log(`Downloaded heightmap: ${name}`);
   }
 
@@ -255,14 +329,14 @@ export class TerrainTiles {
    * @param lon - Longitude in degrees
    * @param zoom - Zoom level
    * @param filename - Optional filename
-   * @returns Promise that resolves to heightmap result
+   * @returns Promise that resolves to terrain result
    */
   static async fetchAndDownload(
     lat: number,
     lon: number,
     zoom: number,
     filename?: string
-  ): Promise<HeightmapResult> {
+  ): Promise<TerrainResult> {
     const result = await this.fetchTileAtLocation(lat, lon, zoom);
     this.downloadHeightmap(result, filename);
     return result;
@@ -284,18 +358,18 @@ export interface TileBounds {
 }
 
 /**
- * Result from fetching and processing a terrain tile.
+ * Result from fetching and processing terrain elevation data.
  */
-export interface HeightmapResult {
-  /** Base64 data URL of the grayscale heightmap PNG */
-  dataUrl: string;
+export interface TerrainResult {
+  /** Raw elevation values in meters, row-major (width × height) */
+  elevations: Float32Array;
   /** Minimum elevation in meters */
   minElevation: number;
   /** Maximum elevation in meters */
   maxElevation: number;
-  /** Image width in pixels */
+  /** Grid width in pixels */
   width: number;
-  /** Image height in pixels */
+  /** Grid height in pixels */
   height: number;
   /** Tile coordinates */
   tile: { z: number; x: number; y: number };
