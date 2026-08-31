@@ -22,6 +22,7 @@ import {
   combineHorizontalExclusionMasks,
   HorizontalExclusionMask,
   lonLatToScene,
+  sceneToLonLat,
   PolygonExclusionMask,
   sampleElevation,
   SEA_LEVEL_METERS,
@@ -50,6 +51,8 @@ import { conformTerrainToBuildings as stampBuildingTerrain } from "./BuildingTer
 import { createOpenStreetMapLandCover } from "./OpenStreetMapLandCover";
 import type { LandCoverSampler } from "./WorldCover";
 import type { TerrainLakeSource } from "./TerrainLakePolygons";
+import { createRoadsideConceptFeatures } from "./OpenStreetMapBarriers";
+import type { BarrierFeature } from "./OpenStreetMapBarriers";
 
 export interface MapTile {
   x: number;
@@ -190,6 +193,61 @@ export class OpenStreetMap {
   private static readonly ZOOM = 14;
   private static readonly TILE_URL = "https://tiles.openfreemap.org/planet/latest";
   private static readonly cache = new Map<string, Promise<VectorTile | undefined>>();
+
+  /** Adds the deterministic roadside concept to villa quarters before the
+   * barrier renderer receives the mapped and generated frontage together. */
+  static createRoadsideFeatures(tiles: readonly MapTile[]): BarrierFeature[] {
+    const buildings = tiles.flatMap((tile) => buildingSources(tile));
+    const roads = tiles.flatMap((tile) => roadSources(tile));
+    return createRoadsideConceptFeatures(buildings, roads);
+  }
+
+  /** Fills sparse OSM lamp coverage with deterministic road-based lamps. */
+  static createInferredStreetLampFeatures(
+    tiles: readonly MapTile[],
+    bounds: TerrainData["bounds"],
+    meshWidth: number,
+    meshDepth: number,
+    metersPerUnit: number,
+  ): BarrierFeature[] {
+    const features: BarrierFeature[] = [];
+    let nextId = -10_000_000;
+    for (const tile of tiles) {
+      for (const source of roadSources(tile)) {
+        const roadClass = String(source.properties.class ?? "").toLowerCase();
+        const spacing = roadClass === "primary" || roadClass === "secondary" ? 32
+          : roadClass === "tertiary" ? 38
+          : roadClass === "residential" || roadClass === "living_street" ? 44
+          : roadClass === "unclassified" ? 58 : 0;
+        if (!spacing) continue;
+        for (const path of source.paths) {
+          let distance = spacing * 0.5;
+          for (let index = 1; index < path.length; index++) {
+            const start = lonLatToScene(path[index - 1][0], path[index - 1][1], bounds, meshWidth, meshDepth);
+            const end = lonLatToScene(path[index][0], path[index][1], bounds, meshWidth, meshDepth);
+            const lengthMeters = Math.hypot(end.x - start.x, end.z - start.z) * metersPerUnit;
+            while (distance < lengthMeters) {
+              const amount = distance / Math.max(lengthMeters, 0.001);
+              const point = sceneToLonLat(
+                start.x + (end.x - start.x) * amount,
+                start.z + (end.z - start.z) * amount,
+                bounds, meshWidth, meshDepth,
+              );
+              features.push({
+                id: nextId--,
+                type: "lamp_pole",
+                coordinates: [[point.lon, point.lat]],
+                tags: { source: "inferred", highway: "street_lamp" },
+              });
+              distance += spacing;
+            }
+            distance -= lengthMeters;
+          }
+        }
+      }
+    }
+    return features;
+  }
 
   static async fetch(bounds: TileBounds, zoom = this.ZOOM): Promise<MapTile[]> {
     const northWest = tileFor(bounds.lonWest, bounds.latNorth, zoom);

@@ -8,7 +8,7 @@ import {
   Vector3,
 } from "@babylonjs/core";
 import { isTerrainFootprintAbove, sceneToLonLat, sampleElevation } from "./Geo";
-import { clamp } from "./MathUtils";
+import { clamp, smoothstep } from "./MathUtils";
 import {
   acquireGrassImpostorAssets,
   createGrassModel,
@@ -42,6 +42,10 @@ const GRASS_HEIGHT_METERS = 0.55;
 // centres comfortably inside that footprint lets neighbouring clumps overlap
 // into turf instead of reading as isolated tufts.
 const GRASS_SPACING_METERS = 1.3;
+/** Lets grass taper into the neighbouring ground instead of ending as a wall. */
+const GRASS_EDGE_FADE_METERS = 5;
+/** Keep the outermost clumps visible as short blades rather than removing them. */
+const GRASS_EDGE_MIN_HEIGHT_SCALE = 0.08;
 /** How strongly each clump adopts the hue and brightness of its local ground. */
 const GRASS_GROUND_COLOR_INFLUENCE = 1;
 const GRASSLAND_REFERENCE_COLOR = landCoverSurfaceColor(LandCoverClass.Grassland);
@@ -78,6 +82,23 @@ export function grassDistanceFadeRange(
     near: Math.max(0, far - width * GRASS_FADE_TRANSITION_TILE_WIDTHS),
     far,
   };
+}
+
+/** Returns the height multiplier for a clump at a rectangular field edge. */
+export function grassEdgeHeightScale(
+  x: number,
+  z: number,
+  meshWidth: number,
+  meshDepth: number,
+  metersPerUnit: number,
+): number {
+  const edgeDistance = Math.min(
+    meshWidth / 2 - Math.abs(x),
+    meshDepth / 2 - Math.abs(z),
+  ) * metersPerUnit;
+  const fade = smoothstep(0, GRASS_EDGE_FADE_METERS, edgeDistance);
+  return GRASS_EDGE_MIN_HEIGHT_SCALE +
+    (1 - GRASS_EDGE_MIN_HEIGHT_SCALE) * fade;
 }
 
 /** Updates an existing field without rebuilding its grass instances. */
@@ -170,7 +191,13 @@ export async function createGrassField(
           waterLineMeters,
         )) continue;
 
-        const heightScale = 0.72 + random() * 0.56;
+        const heightScale = (0.72 + random() * 0.56) * grassEdgeHeightScale(
+          x,
+          z,
+          meshWidth,
+          meshDepth,
+          metersPerUnit,
+        );
         const widthScale = 1.1 + random() * 0.42;
         const yaw = random() * Math.PI * 2;
         const normal = sampleTerrainNormal(

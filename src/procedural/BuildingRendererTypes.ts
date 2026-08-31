@@ -1,5 +1,5 @@
 import type { BaseTexture, Color3, Mesh, Vector3 } from "@babylonjs/core";
-import type { BuildingPlan, BuildingPolygon } from "../BuildingPlanner";
+import type { BuildingPlan, BuildingPolygon, BuildingRoofShape } from "../BuildingPlanner";
 import type { BuildingLayout } from "../BuildingLayoutPlanner";
 import type { ApartmentLayout } from "../ApartmentLayoutPlanner";
 import type { Opening2D, Point2D } from "../FloorPlan";
@@ -12,6 +12,8 @@ export interface BuildingRenderOptions {
   showRoofs?: boolean;
   /** Other footprints in the current map batch, used to detect party walls. */
   neighboringBuildingFootprints?: readonly BuildingPolygon[];
+  /** Optional precomputed neighborhood roof decisions for stable batch rendering. */
+  residentialRoofShapes?: ReadonlyMap<string, BuildingRoofShape>;
 }
 
 export interface BuildingAppearance {

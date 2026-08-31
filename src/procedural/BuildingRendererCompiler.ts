@@ -29,6 +29,7 @@ import {
 } from "../BuildingLayoutDebugCapture";
 import { buildingWindowStyle, type BuildingWindowStyle } from "../BuildingWindowStyle";
 import { buildingProfile } from "../BuildingProfile";
+import { SimplexNoise2D } from "../SimplexNoise";
 import type { TerrainData } from "../TerrainData";
 import type {
   BuildingAppearance,
@@ -59,6 +60,8 @@ import {
   BUILDING_ROOF_EAVE_CLEARANCE_METERS,
   BUILDING_ROOF_OVERHANG_METERS,
   BUILDING_ROOF_TRIM_METERS,
+  BUILDING_GUTTER_DROP_METERS,
+  BUILDING_GUTTER_RADIUS_METERS,
   BUILDING_STAIR_MAX_RUN_METERS,
   BUILDING_STAIR_MIN_RUN_METERS,
   BUILDING_STAIR_WALL_CLEARANCE_METERS,
@@ -72,6 +75,11 @@ import {
 } from "./BuildingRendererConstants";
 
 export type { BuildingRenderOptions } from "./BuildingRendererTypes";
+
+// One broad, world-geographic field makes nearby homes share dormer regions.
+const DORMER_REGION_NOISE = new SimplexNoise2D(0x5d0e3f);
+const RESIDENTIAL_ROOF_NEIGHBORHOOD_METERS = 180;
+const RESIDENTIAL_PITCHED_ROOF_SHARE = 0.68;
 
 /** Compiles semantic building plans into deterministic Babylon geometry. */
 export class ProceduralBuildingRenderer {
@@ -99,7 +107,7 @@ export class ProceduralBuildingRenderer {
       captureUnplannedBuilding(plan, prepared, options, "High-rise buildings use the tower renderer.");
       return createHighRiseBuilding(scene, plan, prepared, options, appearance, towerBlend);
     }
-    const roofShape = resolvedRoofShape(plan, prepared.outline, areaSquareMeters);
+    const roofShape = resolvedRoofShape(plan, prepared.outline, areaSquareMeters, options);
     const roofHeightMeters = roofShape === "flat"
       ? 0
       : plan.roofHeightMeters === undefined
@@ -115,7 +123,13 @@ export class ProceduralBuildingRenderer {
     const sharedFacadeEdges = findSharedFacadeEdges(
       plan.footprint, prepared.outline, terrain, options,
     );
-    const roofEaveElevation = wallTopElevation + BUILDING_ROOF_EAVE_CLEARANCE_METERS;
+    // Keep the roof seated on the wall cap. The trim is already thick enough
+    // to provide the small eave clearance; lifting the roof independently
+    // leaves a visible gap along the long facades and mismatches gable ends.
+    const roofEaveElevation = wallTopElevation + Math.max(
+      0,
+      BUILDING_ROOF_EAVE_CLEARANCE_METERS - BUILDING_ROOF_TRIM_METERS,
+    );
     const detailed = createEnterableBuilding(
       scene,
       plan,
@@ -129,6 +143,17 @@ export class ProceduralBuildingRenderer {
     );
     const parts = detailed.parts;
     const showRoofs = options.showRoofs !== false;
+    if (showRoofs && roofShape === "gabled") {
+      const gable = createGableEndWalls(
+        scene,
+        prepared.outline,
+        wallTopElevation,
+        wallTopElevation + roofHeightMeters,
+        options,
+        appearance.wall,
+      );
+      if (gable) parts.push(gable);
+    }
     const trim = showRoofs && createRoofTrim(
       scene,
       prepared.outline,
@@ -151,6 +176,28 @@ export class ProceduralBuildingRenderer {
         plan.detailSeed,
       );
       if (roof) parts.push(roof);
+      const gutters = createRoofGutters(
+        scene,
+        prepared.outline,
+        roofEaveElevation,
+        roofShape,
+        options,
+        appearance.trim,
+        plan.detailSeed,
+      );
+      if (gutters) parts.push(gutters);
+      if (plan.buildingClass === "residential" && roofShape === "gabled") {
+        const dormers = createResidentialDormers(
+          scene,
+          plan,
+          prepared.outline,
+          roofEaveElevation,
+          roofHeightMeters,
+          options,
+          appearance,
+        );
+        if (dormers) parts.push(dormers);
+      }
     } else if (showRoofs) {
       const rooftop = createRooftopVolume(
         scene,
@@ -163,7 +210,19 @@ export class ProceduralBuildingRenderer {
       );
       if (rooftop) parts.push(rooftop);
     }
+    if (showRoofs && plan.buildingClass === "residential" && roofHeightMeters > 0) {
+      const chimney = createResidentialChimney(
+        scene,
+        prepared.outline,
+        roofEaveElevation + roofHeightMeters,
+        options,
+        appearance,
+        plan.detailSeed,
+      );
+      if (chimney) parts.push(chimney);
+    }
 
+    normalizeBuildingMergeAttributes(parts);
     const merged = Mesh.MergeMeshes(parts, false, true);
     if (!merged) {
       for (const part of parts) part.dispose(false, true);
@@ -1978,8 +2037,6 @@ function createPitchedRoof(
     );
     addRoofFace(indices, [highStart, highStart + 1, order[2], order[3]]);
     addRoofFace(indices, [order[0], order[1], highStart + 1, highStart]);
-    addRoofFace(indices, [order[1], order[2], highStart + 1]);
-    addRoofFace(indices, [order[3], order[0], highStart]);
   } else if ((roofShape === "gabled" || roofShape === "hipped") && eaves.length === 4) {
     const longestEdge = longestPolygonEdge(eaves);
     const order = [0, 1, 2, 3].map((offset) => (longestEdge + offset) % 4);
@@ -1998,8 +2055,10 @@ function createPitchedRoof(
     );
     addRoofFace(indices, [order[0], order[1], ridgeStart + 1, ridgeStart]);
     addRoofFace(indices, [order[2], order[3], ridgeStart, ridgeStart + 1]);
-    addRoofFace(indices, [order[1], order[2], ridgeStart + 1]);
-    addRoofFace(indices, [order[3], order[0], ridgeStart]);
+    if (roofShape === "hipped") {
+      addRoofFace(indices, [order[1], order[2], ridgeStart + 1]);
+      addRoofFace(indices, [order[3], order[0], ridgeStart]);
+    }
   } else {
     const center = polygonCentroid(eaves);
     const peak = vertices.length;
@@ -2022,6 +2081,193 @@ function createPitchedRoof(
   roof.convertToFlatShadedMesh();
   colorRoofMesh(roof, color);
   return roof;
+}
+
+function createRoofGutters(
+  scene: Scene,
+  outline: ScenePoint[],
+  eaveElevation: number,
+  roofShape: BuildingPlan["roofShape"],
+  options: BuildingRenderOptions,
+  color: Color3,
+  detailSeed: number,
+): Mesh | undefined {
+  if (!isConvex(outline) || outline.length > 12) return undefined;
+
+  const eaves = offsetConvexPolygon(
+    outline,
+    roofOverhangMeters(detailSeed) / options.metersPerUnit,
+  );
+  const edgeIndices = roofShape === "gabled" && eaves.length === 4
+    ? (() => {
+      const longestEdge = longestPolygonEdge(eaves);
+      return [longestEdge, (longestEdge + 2) % 4];
+    })()
+    : eaves.map((_, index) => index);
+  const gutterY = (eaveElevation - BUILDING_GUTTER_DROP_METERS) / options.metersPerUnit;
+  const radius = BUILDING_GUTTER_RADIUS_METERS / options.metersPerUnit;
+  const gutterMeshes: Mesh[] = [];
+
+  for (const edgeIndex of edgeIndices) {
+    const start = eaves[edgeIndex];
+    const end = eaves[(edgeIndex + 1) % eaves.length];
+    const gutter = MeshBuilder.CreateTube("buildingGutter", {
+      path: [
+        new Vector3(start.x, gutterY, start.z),
+        new Vector3(end.x, gutterY, end.z),
+      ],
+      radius,
+      tessellation: 6,
+      cap: Mesh.CAP_ALL,
+    }, scene);
+    setSolidVertexColor(gutter, color);
+    gutterMeshes.push(gutter);
+  }
+
+  const merged = Mesh.MergeMeshes(gutterMeshes, true, true);
+  return merged ? stageBuildingMesh(merged) : undefined;
+}
+
+function createResidentialDormers(
+  scene: Scene,
+  plan: BuildingPlan,
+  outline: readonly ScenePoint[],
+  eaveElevation: number,
+  roofHeightMeters: number,
+  options: BuildingRenderOptions,
+  appearance: BuildingAppearance,
+): Mesh | undefined {
+  if (outline.length !== 4 || !isConvex([...outline])) return undefined;
+
+  const geographicCenter = averageLonLat(plan.footprint.outer);
+  // Coordinates are in roughly 500 m regions. This is intentionally much
+  // broader than a house, so a cluster of nearby villas tends to agree.
+  const regionalValue = DORMER_REGION_NOISE.sample(
+    geographicCenter.longitude * 220,
+    geographicCenter.latitude * 220,
+  );
+  if (regionalValue < 0.04) return undefined;
+
+  const longestEdge = longestPolygonEdge([...outline]);
+  const oppositeEdge = (longestEdge + 2) % 4;
+  const shortSpan = Math.min(
+    pointDistance(outline[longestEdge], outline[(longestEdge + 3) % 4]),
+    pointDistance(outline[(longestEdge + 1) % 4], outline[oppositeEdge]),
+  ) * options.metersPerUnit;
+  const edgeLength = pointDistance(
+    outline[longestEdge], outline[(longestEdge + 1) % 4],
+  ) * options.metersPerUnit;
+  if (shortSpan < 4.5 || edgeLength < 6) return undefined;
+
+  const count = regionalValue > 0.42 && seededUnit(plan.detailSeed ^ 0x27a1) > 0.35 ? 2 : 1;
+  const parts: Mesh[] = [];
+  for (let index = 0; index < count; index++) {
+    const edgeIndex = index === 0 ? longestEdge : oppositeEdge;
+    const start = outline[edgeIndex];
+    const end = outline[(edgeIndex + 1) % 4];
+    const dx = end.x - start.x;
+    const dz = end.z - start.z;
+    const length = Math.hypot(dx, dz);
+    const direction = { x: dx / length, z: dz / length };
+    // Counter-clockwise outlines have the building on the left side. The
+    // dormer front faces outwards, toward the corresponding long facade.
+    const inward = { x: -direction.z, z: direction.x };
+    const edgeCenter = {
+      x: start.x + dx * (index === 0 ? 0.5 : 0.5),
+      z: start.z + dz * 0.5,
+    };
+    const distanceToRidgeMeters = shortSpan * 0.38;
+    const roofY = eaveElevation + roofHeightMeters * (1 - distanceToRidgeMeters / (shortSpan / 2));
+    const center = {
+      x: edgeCenter.x + inward.x * distanceToRidgeMeters / options.metersPerUnit,
+      z: edgeCenter.z + inward.z * distanceToRidgeMeters / options.metersPerUnit,
+    };
+    const width = Math.min(2.1, edgeLength * 0.34) / options.metersPerUnit;
+    const depth = 0.82 / options.metersPerUnit;
+    const height = 0.95 / options.metersPerUnit;
+    const rotation = -Math.atan2(direction.z, direction.x);
+    const wall = MeshBuilder.CreateBox("buildingDormer", {
+      width, height, depth,
+    }, scene);
+    wall.position.set(center.x, (roofY + height * 0.45) / options.metersPerUnit, center.z);
+    wall.rotation.y = rotation;
+    setSolidVertexColor(wall, appearance.wall);
+    parts.push(stageBuildingMesh(wall));
+
+    const window = MeshBuilder.CreateBox("buildingDormerWindow", {
+      width: width * 0.62, height: height * 0.52, depth: 0.035 / options.metersPerUnit,
+    }, scene);
+    window.position.set(
+      center.x + direction.z * 0.012,
+      (roofY + height * 0.48) / options.metersPerUnit,
+      center.z - direction.x * 0.012,
+    );
+    window.rotation.y = rotation;
+    setSolidVertexColor(window, new Color3(0.12, 0.22, 0.28));
+    parts.push(stageBuildingMesh(window));
+
+    const cap = MeshBuilder.CreateBox("buildingDormerRoof", {
+      width: width * 1.16, height: 0.14 / options.metersPerUnit, depth: depth * 1.18,
+    }, scene);
+    cap.position.set(center.x, (roofY + height + 0.07 / options.metersPerUnit) / options.metersPerUnit, center.z);
+    cap.rotation.y = rotation;
+    setSolidVertexColor(cap, appearance.roof);
+    parts.push(stageBuildingMesh(cap));
+  }
+  const merged = Mesh.MergeMeshes(parts, true, true);
+  return merged ? stageBuildingMesh(merged) : undefined;
+}
+
+function averageLonLat(points: readonly LonLat[]): { longitude: number; latitude: number } {
+  const total = points.reduce((sum, [longitude, latitude]) => ({
+    longitude: sum.longitude + longitude,
+    latitude: sum.latitude + latitude,
+  }), { longitude: 0, latitude: 0 });
+  return {
+    longitude: total.longitude / points.length,
+    latitude: total.latitude / points.length,
+  };
+}
+
+function createResidentialChimney(
+  scene: Scene,
+  outline: readonly ScenePoint[],
+  ridgeElevation: number,
+  options: BuildingRenderOptions,
+  appearance: BuildingAppearance,
+  detailSeed: number,
+): Mesh | undefined {
+  if (outline.length < 4 || !isConvex([...outline])) return undefined;
+
+  const center = polygonCentroid([...outline]);
+  const metersPerUnit = options.metersPerUnit;
+  const shaftWidth = (0.42 + seededUnit(detailSeed ^ 0x2ac491) * 0.12) / metersPerUnit;
+  const shaftHeight = (1.15 + seededUnit(detailSeed ^ 0x7d31a2) * 0.35) / metersPerUnit;
+  const capHeight = 0.12 / metersPerUnit;
+  const capOverhang = 0.08 / metersPerUnit;
+  const shaftBottom = ridgeElevation / metersPerUnit - 0.08 / metersPerUnit;
+  const shaft = MeshBuilder.CreateBox("buildingChimney", {
+    width: shaftWidth,
+    height: shaftHeight,
+    depth: shaftWidth,
+  }, scene);
+  shaft.position.set(center.x, shaftBottom + shaftHeight / 2, center.z);
+
+  const cap = MeshBuilder.CreateBox("buildingChimneyCap", {
+    width: shaftWidth + capOverhang,
+    height: capHeight,
+    depth: shaftWidth + capOverhang,
+  }, scene);
+  cap.position.set(
+    center.x,
+    shaftBottom + shaftHeight + capHeight / 2,
+    center.z,
+  );
+
+  setSolidVertexColor(shaft, mixColor(appearance.wall, new Color3(0.33, 0.31, 0.28), 0.58));
+  setSolidVertexColor(cap, mixColor(appearance.roof, new Color3(0.2, 0.19, 0.17), 0.35));
+  const chimney = Mesh.MergeMeshes([shaft, cap], true, true);
+  return chimney ? stageBuildingMesh(chimney) : undefined;
 }
 
 function createRooftopVolume(
@@ -2073,22 +2319,91 @@ function resolvedRoofShape(
   plan: BuildingPlan,
   outline: ScenePoint[],
   areaSquareMeters: number,
+  options: BuildingRenderOptions,
 ): BuildingPlan["roofShape"] {
   if (plan.roofShape !== "unknown") {
     if (plan.roofShape === "flat") return "flat";
-    // Mono-pitch roofs read as visibly lopsided in the world view. Keep the
-    // source value accepted for compatibility, but render it symmetrically.
-    if (plan.roofShape === "skillion") return "gabled";
+    // Keep residential roofs to the two-side gabled profile: four-sided
+    // hipped/pyramidal roofs look too stylized at this scale.
+    if (
+      plan.roofShape === "skillion" ||
+      plan.roofShape === "hipped" ||
+      plan.roofShape === "pyramidal"
+    ) return "gabled";
     return isConvex(outline) && outline.length <= 12 ? plan.roofShape : "flat";
   }
   if (outline.length !== 4 || !isConvex(outline) || areaSquareMeters > 650 || plan.heightMeters > 16) {
     return "flat";
   }
-  const variation = seededUnit(plan.detailSeed ^ 0x7a4d2b);
-  if (variation < 0.34) return "gabled";
-  if (variation < 0.62) return "hipped";
-  if (variation < 0.78) return "pyramidal";
+  const sharedShape = options.residentialRoofShapes?.get(plan.id);
+  if (plan.buildingClass === "residential" && sharedShape && sharedShape !== "unknown") {
+    return sharedShape;
+  }
+  const variation = plan.buildingClass === "residential"
+    ? residentialRoofVariation(outline, options)
+    : seededUnit(plan.detailSeed ^ 0x7a4d2b);
+  if (variation < RESIDENTIAL_PITCHED_ROOF_SHARE) return "gabled";
   return "flat";
+}
+
+function residentialRoofVariation(
+  outline: readonly ScenePoint[],
+  _options: BuildingRenderOptions,
+): number {
+  const center = polygonCentroid([...outline]);
+  // Villa districts usually repeat one simple roof language across many
+  // adjacent plots. Keep the cells broad enough to cover a small residential
+  // area, and bias the default toward pitched roofs. Explicit OSM roof tags
+  // are still handled by resolvedRoofShape before this fallback is reached.
+  const neighborhoodCell = RESIDENTIAL_ROOF_NEIGHBORHOOD_METERS /
+    Math.max(0.01, _options.metersPerUnit);
+  const key = `${Math.floor(center.x / neighborhoodCell)},${Math.floor(center.z / neighborhoodCell)}`;
+  return seededUnit(hashString(key) ^ 0x7a4d2b);
+}
+
+function hashString(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index++) {
+    hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193);
+  }
+  return hash | 0;
+}
+
+function createGableEndWalls(
+  scene: Scene,
+  outline: readonly ScenePoint[],
+  eaveElevation: number,
+  peakElevation: number,
+  options: BuildingRenderOptions,
+  color: Color3,
+): Mesh | undefined {
+  if (outline.length !== 4 || !isConvex([...outline])) return undefined;
+  const longestEdge = longestPolygonEdge([...outline]);
+  const order = [0, 1, 2, 3].map((offset) => (longestEdge + offset) % 4);
+  const corners = order.map((index) => outline[index]);
+  const left = midpoint(corners[3], corners[0]);
+  const right = midpoint(corners[1], corners[2]);
+  const vertices = [
+    corners[1], corners[2], right,
+    corners[3], corners[0], left,
+  ].map((point, index) => ({
+    x: point.x,
+    y: (index === 2 || index === 5 ? peakElevation : eaveElevation) / options.metersPerUnit,
+    z: point.z,
+  }));
+  const positions = vertices.flatMap((vertex) => [vertex.x, vertex.y, vertex.z]);
+  const indices = [0, 1, 2, 3, 4, 5];
+  const normals = new Array<number>(positions.length).fill(0);
+  VertexData.ComputeNormals(positions, indices, normals);
+  const data = new VertexData();
+  data.positions = positions;
+  data.indices = indices;
+  data.normals = normals;
+  data.uvs = new Array<number>(vertices.length * 2).fill(0);
+  const mesh = stageBuildingMesh(new Mesh("buildingGableWalls", scene));
+  data.applyToMesh(mesh);
+  setSolidVertexColor(mesh, color);
+  return mesh;
 }
 
 function buildingAppearance(plan: BuildingPlan): BuildingAppearance {
@@ -2236,6 +2551,29 @@ function setSolidVertexColor(mesh: Mesh, color: Color3): void {
   }
   mesh.setVerticesData(VertexBuffer.ColorKind, colors);
   mesh.useVertexColors = true;
+}
+
+/** Babylon requires every source mesh in a merge to expose the same buffers. */
+function normalizeBuildingMergeAttributes(meshes: readonly Mesh[]): void {
+  for (const mesh of meshes) {
+    const vertexCount = mesh.getTotalVertices();
+    if (!mesh.getVerticesData(VertexBuffer.NormalKind)) {
+      const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+      const indices = mesh.getIndices();
+      if (positions && indices) {
+        const normals = new Array<number>(positions.length).fill(0);
+        VertexData.ComputeNormals(positions, indices, normals);
+        mesh.setVerticesData(VertexBuffer.NormalKind, normals);
+      }
+    }
+    if (!mesh.getVerticesData(VertexBuffer.UVKind)) {
+      mesh.setVerticesData(VertexBuffer.UVKind, new Array<number>(vertexCount * 2).fill(0));
+    }
+    if (!mesh.getVerticesData(VertexBuffer.ColorKind)) {
+      const colors = new Array<number>(vertexCount * 4).fill(1);
+      mesh.setVerticesData(VertexBuffer.ColorKind, colors);
+    }
+  }
 }
 
 function seededUnit(seed: number): number {

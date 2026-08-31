@@ -20,6 +20,22 @@ import { createVegetationFieldResult } from "./VegetationField";
 import type { VegetationFieldResult } from "./VegetationField";
 import type { TerrainData } from "./TerrainData";
 import type { TileBounds } from "./WorldGrid";
+import type { BuildingSource } from "./BuildingPlanner";
+import { normalizeBuildingClass } from "./BuildingPlanner";
+import { SimplexNoise2D } from "./SimplexNoise";
+
+/** A generated residential frontage concept, used when detailed OSM barriers
+ * are absent or incomplete around a villa quarter. */
+export const ROADSIDE_CONCEPT = "roadside" as const;
+export type RoadsideConcept = typeof ROADSIDE_CONCEPT;
+
+export type RoadsideBuildingSource = BuildingSource;
+
+export interface RoadsideRoadSource {
+  id: string;
+  paths: Array<Array<readonly [number, number]>>;
+  properties: Readonly<Record<string, unknown>>;
+}
 
 export type BarrierType =
   | "hedge"
@@ -28,7 +44,8 @@ export type BarrierType =
   | "guard_rail"
   | "jersey_barrier"
   | "cable_barrier"
-  | "retaining_wall";
+  | "retaining_wall"
+  | "lamp_pole";
 
 export interface BarrierFeature {
   id: number;
@@ -51,12 +68,159 @@ export interface BarrierFeatureLayer {
   hedgeField?: VegetationFieldResult;
 }
 
+const ROADSIDE_REGION_NOISE = new SimplexNoise2D(0x7a61d2);
+
+/**
+ * Fills the most common missing detail in mapped villa quarters: a loose
+ * roadside boundary around detached homes. The broad noise field makes whole
+ * pockets hedge-heavy, while a smaller share becomes fence-heavy or remains
+ * open. Every generated property has a deliberate road-facing gap.
+ */
+export function createRoadsideConceptFeatures(
+  buildings: readonly RoadsideBuildingSource[],
+  roads: readonly RoadsideRoadSource[],
+): BarrierFeature[] {
+  const result: BarrierFeature[] = [];
+  for (const building of buildings) {
+    const kind = normalizeBuildingClass(
+      building.properties.class ?? building.properties.building,
+    );
+    const rawKind = String(
+      building.properties.building ?? building.properties.class ?? "",
+    ).toLowerCase();
+    if (kind !== "residential" ||
+        (!/(^|_)(house|detached|semidetached_house|bungalow|villa)(_|$)/.test(rawKind) &&
+          rawKind !== "residential")) continue;
+    const ring = withoutClosingLonLat(building.polygon.outer);
+    if (ring.length < 4) continue;
+    const center = lonLatCentroid(ring);
+    const regional = ROADSIDE_REGION_NOISE.sample(center[0] * 220, center[1] * 220);
+    if (regional < -0.38) continue;
+    const nearestRoad = nearestRoadDistanceMeters(center, roads);
+    if (nearestRoad > 42) continue;
+
+    const style: BarrierType = regional > -0.04 ? "hedge" : "fence";
+    const scale = 1.32;
+    const boundary = ring.map(([lon, lat]) => [
+      center[0] + (lon - center[0]) * scale,
+      center[1] + (lat - center[1]) * scale,
+    ] as readonly [number, number]);
+    const gateEdge = nearestBoundaryEdge(boundary, roads);
+    const gateWidth = 3.4 + (stableUnit(building.id) * 1.8);
+    for (let index = 0; index < boundary.length; index++) {
+      const start = boundary[index];
+      const end = boundary[(index + 1) % boundary.length];
+      const length = distanceMeters(start, end);
+      if (index !== gateEdge || length <= gateWidth + 2) {
+        result.push(roadsideFeature(building.id, index, style, [start, end]));
+        continue;
+      }
+      const inset = 0.18 + stableUnit(`${building.id}:inset:${index}`) * 0.16;
+      const gapStart = inset + (length - gateWidth) * 0.5;
+      const gapEnd = gapStart + gateWidth;
+      const first = interpolateLonLat(start, end, gapStart / length);
+      const second = interpolateLonLat(start, end, gapEnd / length);
+      result.push(roadsideFeature(building.id, index, style, [start, first]));
+      result.push(roadsideFeature(building.id, index + 1000, style, [second, end]));
+    }
+  }
+  return result;
+}
+
+function roadsideFeature(
+  buildingId: string,
+  edge: number,
+  type: BarrierType,
+  coordinates: Array<readonly [number, number]>,
+): BarrierFeature {
+  return {
+    id: stableInteger(`${ROADSIDE_CONCEPT}:${buildingId}:${edge}`),
+    type,
+    coordinates,
+    tags: { concept: ROADSIDE_CONCEPT, source: "procedural" },
+  };
+}
+
+function withoutClosingLonLat(points: readonly (readonly [number, number])[]): Array<readonly [number, number]> {
+  if (points.length > 1 && points[0][0] === points[points.length - 1][0] &&
+      points[0][1] === points[points.length - 1][1]) return points.slice(0, -1);
+  return [...points];
+}
+
+function lonLatCentroid(points: readonly (readonly [number, number])[]): readonly [number, number] {
+  return [
+    points.reduce((sum, point) => sum + point[0], 0) / points.length,
+    points.reduce((sum, point) => sum + point[1], 0) / points.length,
+  ];
+}
+
+function distanceMeters(a: readonly [number, number], b: readonly [number, number]): number {
+  const latScale = 111_320;
+  const lonScale = latScale * Math.cos(((a[1] + b[1]) * 0.5) * Math.PI / 180);
+  return Math.hypot((b[0] - a[0]) * lonScale, (b[1] - a[1]) * latScale);
+}
+
+function interpolateLonLat(
+  a: readonly [number, number], b: readonly [number, number], amount: number,
+): readonly [number, number] {
+  return [a[0] + (b[0] - a[0]) * amount, a[1] + (b[1] - a[1]) * amount];
+}
+
+function nearestBoundaryEdge(
+  boundary: readonly (readonly [number, number])[],
+  roads: readonly RoadsideRoadSource[],
+): number {
+  let bestEdge = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let edge = 0; edge < boundary.length; edge++) {
+    const midpoint = interpolateLonLat(boundary[edge], boundary[(edge + 1) % boundary.length], 0.5);
+    const distance = nearestRoadDistanceMeters(midpoint, roads);
+    if (distance < bestDistance) { bestDistance = distance; bestEdge = edge; }
+  }
+  return bestEdge;
+}
+
+function nearestRoadDistanceMeters(
+  point: readonly [number, number], roads: readonly RoadsideRoadSource[],
+): number {
+  let nearest = Number.POSITIVE_INFINITY;
+  for (const road of roads) for (const path of road.paths) {
+    for (let index = 1; index < path.length; index++) {
+      const a = path[index - 1];
+      const b = path[index];
+      const amount = nearestSegmentAmount(point, a, b);
+      nearest = Math.min(nearest, distanceMeters(point, interpolateLonLat(a, b, amount)));
+    }
+  }
+  return nearest;
+}
+
+function nearestSegmentAmount(
+  point: readonly [number, number], a: readonly [number, number], b: readonly [number, number],
+): number {
+  const cos = Math.cos(point[1] * Math.PI / 180);
+  const ax = a[0] * cos; const bx = b[0] * cos; const px = point[0] * cos;
+  const ay = a[1]; const by = b[1]; const py = point[1];
+  const dx = bx - ax; const dy = by - ay;
+  return Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1)));
+}
+
+function stableUnit(value: string): number {
+  return (stableInteger(value) >>> 0) / 0x1_0000_0000;
+}
+
+function stableInteger(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index++) hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193);
+  return hash | 0;
+}
+
 interface OverpassResponse {
   elements?: unknown[];
 }
 
 interface BarrierAppearance {
-  style: "hedge" | "woodFence" | "chainlink" | "guardRail" | "wall" | "noiseBarrier" | "jerseyBarrier";
+  style: "hedge" | "woodFence" | "chainlink" | "guardRail" | "wall" | "noiseBarrier" | "jerseyBarrier" | "lampPole";
   heightMeters: number;
 }
 
@@ -113,6 +277,17 @@ export class OpenStreetMapBarriers {
       const projected = feature.coordinates.map(([lon, lat]) =>
         lonLatToScene(lon, lat, terrain.bounds, options.meshWidth, options.meshDepth),
       );
+      if (feature.type === "lamp_pole") {
+        const point = projected[0];
+        if (!point || point.x < -options.meshWidth / 2 || point.x > options.meshWidth / 2 ||
+            point.z < -options.meshDepth / 2 || point.z > options.meshDepth / 2) continue;
+        const mesh = createLampPole(scene, point, terrain, options, appearance.heightMeters);
+        const lamps = byStyle.get("lampPole");
+        if (lamps) lamps.push(mesh);
+        else byStyle.set("lampPole", [mesh]);
+        count++;
+        continue;
+      }
       const clipped = clipPolyline(projected, options.meshWidth / 2, options.meshDepth / 2);
       let rendered = false;
       for (const path of clipped) {
@@ -215,7 +390,9 @@ export class OpenStreetMapBarriers {
       : document.querySelector<HTMLMetaElement>('meta[name="overpass-url"]')?.content ||
         this.DEFAULT_ENDPOINT;
     const bbox = [bounds.latSouth, bounds.lonWest, bounds.latNorth, bounds.lonEast].join(",");
-    const query = `[out:json][timeout:15];way["barrier"~"^(hedge|fence|wall|guard_rail|jersey_barrier|cable_barrier|retaining_wall)$"](${bbox});out tags geom qt;`;
+    // Request barrier ways generically and filter to the supported types while
+    // parsing. This keeps the union query valid across Overpass instances.
+    const query = `[out:json][timeout:15];(way["barrier"](${bbox});node["highway"="street_lamp"](${bbox}););out tags geom qt;`;
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -236,26 +413,36 @@ function parseBarrierFeatures(elements: unknown): BarrierFeature[] {
   for (const value of elements) {
     if (!value || typeof value !== "object") continue;
     const element = value as Record<string, unknown>;
-    if (element.type !== "way" || !Number.isFinite(element.id)) continue;
+    if ((element.type !== "way" && element.type !== "node") || !Number.isFinite(element.id)) continue;
     if (!element.tags || typeof element.tags !== "object") continue;
     const rawTags = element.tags as Record<string, unknown>;
     const type = rawTags.barrier;
-    if (!isBarrierType(type) || !Array.isArray(element.geometry)) continue;
+    const isLampPole = element.type === "node" && rawTags.highway === "street_lamp";
+    if ((!isLampPole && !isBarrierType(type)) ||
+        (!isLampPole && !Array.isArray(element.geometry))) continue;
     const coordinates: Array<readonly [number, number]> = [];
-    for (const point of element.geometry) {
-      if (!point || typeof point !== "object") continue;
-      const { lon, lat } = point as { lon?: unknown; lat?: unknown };
+    if (isLampPole) {
+      const { lon, lat } = element as { lon?: unknown; lat?: unknown };
       if (typeof lon === "number" && Number.isFinite(lon) &&
           typeof lat === "number" && Number.isFinite(lat)) {
         coordinates.push([lon, lat]);
       }
+    } else {
+      for (const point of element.geometry as unknown[]) {
+        if (!point || typeof point !== "object") continue;
+        const { lon, lat } = point as { lon?: unknown; lat?: unknown };
+        if (typeof lon === "number" && Number.isFinite(lon) &&
+            typeof lat === "number" && Number.isFinite(lat)) {
+          coordinates.push([lon, lat]);
+        }
+      }
     }
-    if (coordinates.length < 2) continue;
+    if (coordinates.length < (isLampPole ? 1 : 2)) continue;
     const tags: Record<string, string> = {};
     for (const [key, tagValue] of Object.entries(rawTags)) {
       if (typeof tagValue === "string") tags[key] = tagValue;
     }
-    features.push({ id: element.id as number, type, coordinates, tags });
+    features.push({ id: element.id as number, type: isLampPole ? "lamp_pole" : type as BarrierType, coordinates, tags });
   }
   return features;
 }
@@ -267,6 +454,9 @@ function isBarrierType(value: unknown): value is BarrierType {
 }
 
 function barrierAppearance(feature: BarrierFeature): BarrierAppearance {
+  if (feature.type === "lamp_pole") {
+    return { style: "lampPole", heightMeters: positiveMeters(feature.tags.height) ?? 6.5 };
+  }
   const taggedHeight = positiveMeters(feature.tags.height);
   switch (feature.type) {
     case "hedge": return { style: "hedge", heightMeters: taggedHeight ?? 1.6 };
@@ -297,6 +487,46 @@ function positiveMeters(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseFloat(value.replace(",", "."));
   return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 12) : undefined;
+}
+
+/** Small, non-instanced street lamp geometry. Lamp nodes are sparse enough that
+ * a real mesh is clearer and cheaper than introducing a second impostor atlas. */
+function createLampPole(
+  scene: Scene,
+  point: { x: number; z: number },
+  terrain: TerrainData,
+  options: BarrierLayerOptions,
+  heightMeters: number,
+): Mesh {
+  const unitHeight = heightMeters / options.metersPerUnit;
+  const ground = sampleElevation(terrain, point.x, point.z, options.meshWidth, options.meshDepth) /
+    options.metersPerUnit;
+  const pole = MeshBuilder.CreateCylinder("lampPole", {
+    height: unitHeight,
+    diameter: 0.12 / options.metersPerUnit,
+    tessellation: 8,
+  }, scene);
+  pole.position.set(point.x, ground + unitHeight / 2, point.z);
+
+  const armLength = 0.8 / options.metersPerUnit;
+  const arm = MeshBuilder.CreateCylinder("lampPoleArm", {
+    height: armLength,
+    diameter: 0.09 / options.metersPerUnit,
+    tessellation: 8,
+  }, scene);
+  arm.rotationQuaternion = Quaternion.RotationAxis(Vector3.Forward(), Math.PI / 2);
+  arm.position.set(point.x + armLength / 2, ground + unitHeight - 0.18 / options.metersPerUnit, point.z);
+
+  const fixture = MeshBuilder.CreateSphere("lampFixture", {
+    diameter: 0.24 / options.metersPerUnit,
+    segments: 6,
+  }, scene);
+  fixture.position.set(point.x + armLength, ground + unitHeight - 0.3 / options.metersPerUnit, point.z);
+
+  const mesh = Mesh.MergeMeshes([pole, arm, fixture], true, true);
+  if (!mesh) throw new Error("Could not create lamp pole mesh.");
+  mesh.setEnabled(false);
+  return mesh;
 }
 
 function createHedgeMatrices(
@@ -565,6 +795,10 @@ function createBarrierMaterial(scene: Scene, style: BarrierAppearance["style"]):
       break;
     case "jerseyBarrier":
       material.diffuseColor = new Color3(0.49, 0.48, 0.45);
+      break;
+    case "lampPole":
+      material.diffuseColor = new Color3(0.12, 0.14, 0.14);
+      material.specularColor = new Color3(0.22, 0.24, 0.24);
       break;
     case "wall":
       material.diffuseColor = new Color3(0.37, 0.35, 0.31);

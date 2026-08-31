@@ -153,6 +153,7 @@ export class SceneControls {
     this.element.appendChild(sceneGroup);
     this.element.appendChild(weatherGroup);
 
+
     const locationGroup = this.createGroup("Location");
     const placeForm = document.createElement("form");
     placeForm.className = "place-form";

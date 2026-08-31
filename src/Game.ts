@@ -695,6 +695,12 @@ export class Game {
     const barrierRequest = this.loadBarrierFeatures(record);
     const mapWays = await this.loadMapTiles(record);
     const barrierFeatures = await barrierRequest;
+    const roadsideFeatures = OpenStreetMap.createRoadsideFeatures(mapWays);
+    const inferredLamps = OpenStreetMap.createInferredStreetLampFeatures(
+      mapWays, terrainData.bounds, record.meshWidth, record.meshDepth,
+      metersPerUnit,
+    );
+    const allBarrierFeatures = [...barrierFeatures, ...roadsideFeatures, ...inferredLamps];
     if (generation !== this.streamingGeneration) return;
     const placementLandCover = OpenStreetMap.createLandCoverSampler(
       mapWays,
@@ -726,7 +732,7 @@ export class Game {
     }
     if (generation !== this.streamingGeneration) return;
     const barrierExclusionMask = OpenStreetMapBarriers.createExclusionMask(
-      barrierFeatures,
+      allBarrierFeatures,
       terrainData,
       mapOptions,
     );
@@ -899,7 +905,7 @@ export class Game {
     );
     const barrierLayer = await OpenStreetMapBarriers.createLayer(
       this.scene,
-      barrierFeatures,
+      allBarrierFeatures,
       terrainData,
       mapOptions,
       yieldControl,
