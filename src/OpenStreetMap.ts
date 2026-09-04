@@ -634,7 +634,9 @@ export class OpenStreetMap {
     const key = `${zoom}/${x}/${y}`;
     let request = this.cache.get(key);
     if (!request) {
-      request = fetch(`${this.TILE_URL}/${key}.pbf`)
+      request = fetch(`${this.TILE_URL}/${key}.pbf`, {
+        signal: AbortSignal.timeout(15_000),
+      })
         .then(async (response) => {
           if (!response.ok) throw new Error(`Map tile request failed (${response.status}).`);
           const bytes = new Uint8Array(await response.arrayBuffer());

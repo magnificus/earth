@@ -17,6 +17,8 @@ export const BUILDING_INTERIOR_LOAD_DISTANCE_METERS = 18;
 export const BUILDING_INTERIOR_UNLOAD_DISTANCE_METERS = 27;
 export const BUILDING_INTERIOR_CHECK_INTERVAL_MS = 120;
 export const BUILDING_INTERIORS_PER_CHECK = 2;
+/** Maximum number of adjacent interior storeys kept resident per building. */
+export const BUILDING_INTERIOR_RENDERED_FLOOR_COUNT = 5;
 
 export const BUILDING_STAIR_WIDTH_METERS = 1.15;
 export const BUILDING_STAIR_MIN_RUN_METERS = 2.4;

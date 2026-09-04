@@ -12,7 +12,7 @@ test("the configured model range applies to vegetation except short-range mature
   );
   assert.match(
     game,
-    /for \(const kind of VEGETATION_FIELD_KINDS\)[\s\S]*?updateField\(field, this\.fieldLodDistance\(kind\)\)/,
+    /for \(const kind of VEGETATION_FIELD_KINDS\)[\s\S]*?updateField\([\s\S]*?field,[\s\S]*?this\.fieldLodDistance\(kind\)/,
   );
   assert.match(
     game,

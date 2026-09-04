@@ -14,6 +14,7 @@ import {
 } from "./Impostor";
 import { createVertexColorCaptureMaterial } from "./procedural/ProceduralCaptureMaterial";
 import { createSeededRandom } from "./Random";
+import { computeWeldedNormals } from "./RockGeometry";
 
 const SOURCE_HEIGHT = 0.62;
 const CAPTURE_DIAMETER = 5.2;
@@ -115,8 +116,7 @@ function createRockyBeachSource(
     for (const index of baseIndices) indices.push(vertexOffset + index);
   }
 
-  const normals = new Float32Array(positions.length);
-  VertexData.ComputeNormals(positions, indices, normals);
+  const normals = computeWeldedNormals(positions, indices);
   const data = new VertexData();
   data.positions = positions;
   data.indices = indices;

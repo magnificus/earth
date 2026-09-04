@@ -61,6 +61,7 @@ export const IMPOSTOR_CUBE_FACES: readonly CubeFace[] = [
   { normal: new Vector3(0, 1, 0), right: new Vector3(1, 0, 0), up: new Vector3(0, 0, -1) },
   { normal: new Vector3(0, 0, 1), right: new Vector3(1, 0, 0), up: new Vector3(0, 1, 0) },
   { normal: new Vector3(0, 0, -1), right: new Vector3(-1, 0, 0), up: new Vector3(0, 1, 0) },
+  { normal: new Vector3(0, -1, 0), right: new Vector3(1, 0, 0), up: new Vector3(0, 0, 1) },
 ];
 
 /** One side and the top are sufficient for sources symmetric around the Y axis. */
@@ -462,6 +463,9 @@ export async function captureImpostorAtlases(
     cooperative = false,
     onProgress,
   } = options;
+  const captureFaces = upperHemisphereOnly
+    ? faces.filter((face) => face.normal.y >= -0.5)
+    : faces;
   const atlasWidth = gridWidth * resolutionWidth;
   const atlasHeight = gridHeight * resolutionHeight;
   const maxTextureSize = scene.getEngine().getCaps().maxTextureSize;
@@ -471,12 +475,12 @@ export async function captureImpostorAtlases(
     );
   }
   console.log(
-    `${name}: capturing ${faces.length * gridWidth * gridHeight} views ` +
+    `${name}: capturing ${captureFaces.length * gridWidth * gridHeight} views ` +
     `(${gridWidth}x${gridHeight} directions per face) ` +
     `at ${resolutionWidth}x${resolutionHeight}`,
   );
 
-  const canvases = faces.map(() => {
+  const canvases = captureFaces.map(() => {
     const canvas = document.createElement("canvas");
     canvas.width = atlasWidth;
     canvas.height = atlasHeight;
@@ -512,7 +516,7 @@ export async function captureImpostorAtlases(
     clearPending = false;
   });
   const sourceVisibility = meshes.map((mesh) => mesh.isVisible);
-  const total = faces.length * gridWidth * gridHeight;
+  const total = captureFaces.length * gridWidth * gridHeight;
   let completed = 0;
   let sliceStart = performance.now();
   let viewsThisFrame = 0;
@@ -525,8 +529,8 @@ export async function captureImpostorAtlases(
       await nextFrame();
       sliceStart = performance.now();
     }
-    for (let faceIndex = 0; faceIndex < faces.length; faceIndex++) {
-      const face = faces[faceIndex];
+    for (let faceIndex = 0; faceIndex < captureFaces.length; faceIndex++) {
+      const face = captureFaces[faceIndex];
       const context = canvases[faceIndex].getContext("2d", { alpha: true })!;
       const verticalSpan = Math.abs(face.normal.y) > 0.5 ? captureWidth : captureHeight;
       camera.orthoTop = verticalSpan / 2;

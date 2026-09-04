@@ -247,6 +247,33 @@ test("first full LOD layout cooperatively yields before the field commits", asyn
   assertFieldMatchesGroundTruth(impostorMesh, modelMesh, positions, camera, 40, "prepared");
 });
 
+test("forced activation rebuilds a prepared field at the same camera position", async () => {
+  const positions = [
+    { x: 0, y: 0, z: 0 },
+    { x: 35, y: 0, z: 0 },
+    { x: 80, y: 0, z: 0 },
+  ];
+  const impostorMesh = createMeshStub("impostors");
+  const modelMesh = createMeshStub("models");
+  const field = await createVegetationFieldResult(
+    { name: "test-root" },
+    [impostorMesh],
+    [modelMesh],
+    packMatrices(positions),
+    1,
+    "auto",
+  );
+  const camera = new Vector3(0, 2, 0);
+
+  await field.prepareLod(camera, 40);
+  const fullRebuildsBeforeActivation = field.consumeLodDebugStats().fullRebuilds;
+  assert.equal(field.updateLod(camera, 40), false, "an ordinary unchanged update should be skipped");
+  assert.equal(field.updateLod(camera, 40, true), true);
+  assert.equal(field.consumeLodDebugStats().fullRebuilds, 1);
+  assert.equal(fullRebuildsBeforeActivation, 1);
+  assertFieldMatchesGroundTruth(impostorMesh, modelMesh, positions, camera, 40, "activated");
+});
+
 test("incremental LOD survives direction changes and revisits", async () => {
   const positions = [];
   for (let x = -120; x <= 120; x += 4) {

@@ -41,7 +41,7 @@ export interface VegetationFieldResult {
     yieldControl?: () => Promise<void>,
   ): Promise<boolean>;
   /** Updates packed model/impostor instances; true when instance buffers changed. */
-  updateLod(cameraPosition: Vector3, distanceMeters: number): boolean;
+  updateLod(cameraPosition: Vector3, distanceMeters: number, forceFullUpdate?: boolean): boolean;
   consumeLodDebugStats(): VegetationLodDebugStats;
 }
 
@@ -397,16 +397,21 @@ export async function createVegetationFieldResult(
     (model ? update.dirtyModelBlendSlots : update.dirtyImpostorBlendSlots).add(slot);
   };
 
-  const updateLod = (cameraPosition: Vector3, distanceMeters: number): boolean => {
+  const updateLod = (
+    cameraPosition: Vector3,
+    distanceMeters: number,
+    forceFullUpdate = false,
+  ): boolean => {
     const distanceChanged = distanceMeters !== lastDistanceMeters;
     const movementSquared = hasLastCameraPosition
       ? Vector3.DistanceSquared(cameraPosition, lastCameraPosition)
       : Number.POSITIVE_INFINITY;
     const minimumMovement = LOD_UPDATE_MIN_MOVEMENT_METERS / metersPerUnit;
-    if (!distanceChanged && movementSquared < minimumMovement * minimumMovement) return false;
+    if (!forceFullUpdate && !distanceChanged &&
+        movementSquared < minimumMovement * minimumMovement) return false;
     const hadPreviousCameraPosition = hasLastCameraPosition;
     const transitionWidth = Math.min(LOD_TRANSITION_WIDTH_METERS, distanceMeters) / metersPerUnit;
-    const forceFullUpdate = !hadPreviousCameraPosition || distanceChanged ||
+    const rebuildAllSlots = forceFullUpdate || !hadPreviousCameraPosition || distanceChanged ||
       movementSquared >= transitionWidth * transitionWidth;
     lastCameraPosition.copyFrom(cameraPosition);
     hasLastCameraPosition = true;
@@ -414,7 +419,7 @@ export async function createVegetationFieldResult(
     // Impostor-only and model-only modes hold a fixed instance set; the
     // material resolves impostor detail per fragment.
     if (mode !== "auto") return false;
-    updateAutoLod(cameraPosition, distanceMeters, forceFullUpdate);
+    updateAutoLod(cameraPosition, distanceMeters, rebuildAllSlots);
     return true;
   };
 
@@ -647,8 +652,9 @@ export function combineVegetationFieldResults(
       }
       return changed;
     },
-    updateLod: (cameraPosition, distanceMeters) => fields.reduce(
-      (changed, field) => field.updateLod(cameraPosition, distanceMeters) || changed,
+    updateLod: (cameraPosition, distanceMeters, forceFullUpdate) => fields.reduce(
+      (changed, field) =>
+        field.updateLod(cameraPosition, distanceMeters, forceFullUpdate) || changed,
       false,
     ),
     consumeLodDebugStats: () => fields.reduce<VegetationLodDebugStats>(

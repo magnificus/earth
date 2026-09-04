@@ -21,6 +21,7 @@ import type { LandCoverClass, LandCoverSampler } from "./WorldCover";
 import { yieldToNextFrame } from "./FrameBudget";
 import { DEFAULT_WORLD_SEED } from "./WorldGrid";
 import type { FrameBudgetYielder } from "./FrameBudget";
+import { terrainTextureCoordinates } from "./TerrainTextureCoordinates";
 
 const GROUND_COVER_BLEND_METERS = 12;
 const FAR_TILE_SUBDIVISIONS = 32;
@@ -32,6 +33,9 @@ export interface TerrainMeshOptions {
   meshDepth: number;
   subdivisions: number;
   metersPerUnit: number;
+  /** Tile-center position in the stable scene frame, used to keep texture phase continuous. */
+  worldOffsetX?: number;
+  worldOffsetZ?: number;
   landCover?: LandCoverSampler;
   yieldControl?: FrameBudgetYielder;
   snowCovered?: boolean;
@@ -57,6 +61,8 @@ export async function createTerrainMesh(
     meshDepth,
     subdivisions,
     metersPerUnit,
+    worldOffsetX = 0,
+    worldOffsetZ = 0,
     landCover,
     yieldControl,
     snowCovered = false,
@@ -116,9 +122,20 @@ export async function createTerrainMesh(
 
       const vertexIndex = row * verticesPerRow + column;
       positions[vertexIndex * 3 + 1] = elevation / metersPerUnit;
-      // UVs use physical metres so all tiles can share terrain textures.
-      uvs[vertexIndex * 2] *= terrain.groundWidthMeters;
-      uvs[vertexIndex * 2 + 1] *= terrain.groundHeightMeters;
+      // Anchor UVs to the same stable frame as the meshes. Restarting at zero
+      // on every tile creates a phase jump wherever its size is not an exact
+      // multiple of the texture repeat.
+      const textureCoordinates = terrainTextureCoordinates(
+        uvs[vertexIndex * 2],
+        uvs[vertexIndex * 2 + 1],
+        meshWidth,
+        meshDepth,
+        metersPerUnit,
+        worldOffsetX,
+        worldOffsetZ,
+      );
+      uvs[vertexIndex * 2] = textureCoordinates[0];
+      uvs[vertexIndex * 2 + 1] = textureCoordinates[1];
 
       if (surfaceColors && landCover) {
         const { lon, lat } = sceneToLonLat(

@@ -9,11 +9,11 @@ import {
   TransformNode,
   Vector3,
   VertexBuffer,
-  VertexData,
 } from "@babylonjs/core";
 import { NoiseProceduralTexture } from "@babylonjs/core/Materials/Textures/Procedurals/noiseProceduralTexture";
 import { isTerrainFootprintAbove, sceneToLonLat, sampleElevation } from "./Geo";
 import { createSeededRandom } from "./Random";
+import { computeWeldedNormals } from "./RockGeometry";
 import type { TerrainData } from "./TerrainData";
 import {
   createPlacementGrid,
@@ -396,11 +396,13 @@ function createRockMaterial(scene: Scene): StandardMaterial {
   grain.animationSpeedFactor = 0;
   grain.uScale = 3.8;
   grain.vScale = 3.8;
-  material.bumpTexture = grain;
-  material.bumpTexture.level = 0.28;
+  // NoiseProceduralTexture is grayscale, not a tangent-space normal map.
+  // Feeding it through the bump slot bends every normal toward the same
+  // diagonal and makes highlights flip as the camera moves. Keep it as subtle
+  // albedo grain and let the mesh normals describe the stone's surface.
   material.detailMap.texture = grain;
-  material.detailMap.diffuseBlendLevel = 0.16;
-  material.detailMap.bumpLevel = 0.18;
+  material.detailMap.diffuseBlendLevel = 0.2;
+  material.detailMap.bumpLevel = 0;
   material.detailMap.isEnabled = true;
   material.freeze();
   return material;
@@ -410,7 +412,7 @@ function createRockMaterial(scene: Scene): StandardMaterial {
 function createRockMesh(scene: Scene, variant: number, mossy: boolean): Mesh {
   const rock = MeshBuilder.CreateIcoSphere(
     `rock-${variant}-${mossy ? "mossy" : "bare"}`,
-    { radius: 1, subdivisions: 2, flat: false },
+    { radius: 1, subdivisions: 3, flat: false },
     scene,
   );
   const positions = rock.getVerticesData(VertexBuffer.PositionKind)!;
@@ -420,18 +422,27 @@ function createRockMesh(scene: Scene, variant: number, mossy: boolean): Mesh {
   const stretchZ = 0.88 + random() * 0.22;
   const offsetX = (random() - 0.5) * 0.18;
   const offsetZ = (random() - 0.5) * 0.18;
+  const lobePhase = random() * Math.PI * 2;
+  const ridgePhase = random() * Math.PI * 2;
   for (let index = 0; index < positions.length; index += 3) {
     const x = positions[index];
     const y = positions[index + 1];
     const z = positions[index + 2];
-    const angularWarp = 1 + 0.1 * Math.sin(x * 7.1 + z * 4.7 + variant * 2.3) +
-      0.055 * Math.sin(y * 9.3 - x * 3.8);
-    positions[index] = (x * stretchX + offsetX * (1 - y * y)) * angularWarp;
-    positions[index + 1] = y * (0.9 + 0.08 * Math.sin(x * 5.4 + z * 6.2));
-    positions[index + 2] = (z * stretchZ + offsetZ * (1 - y * y)) * angularWarp;
+    const angle = Math.atan2(z, x);
+    const equator = Math.sqrt(Math.max(0, 1 - y * y));
+    const broadLobes = Math.sin(angle * 2 + lobePhase) * 0.065 +
+      Math.sin(angle * 3 - ridgePhase) * 0.035;
+    // Longitude is undefined at the poles. Fade angular deformation out there
+    // so duplicated ico-sphere pole vertices stay coincident and share a sane
+    // normal instead of forming tiny spikes with divergent highlights.
+    const crownVariation = Math.sin(angle * 4 + ridgePhase + y * 2.2) * 0.035 * equator;
+    const radialWarp = 1 + broadLobes * equator + crownVariation * (0.4 + 0.6 * equator);
+    const lowerBulge = 1 + Math.max(0, -y) * 0.1;
+    positions[index] = (x * stretchX * lowerBulge + offsetX * (1 - y * y)) * radialWarp;
+    positions[index + 1] = y * (0.9 + crownVariation) - 0.035 * (1 - y * y);
+    positions[index + 2] = (z * stretchZ * lowerBulge + offsetZ * (1 - y * y)) * radialWarp;
   }
-  const normals = new Float32Array(positions.length);
-  VertexData.ComputeNormals(positions, indices, normals);
+  const normals = computeWeldedNormals(positions, indices);
   const colors = new Float32Array((positions.length / 3) * 4);
   const stone = ROCK_COLORS[variant];
   for (let vertex = 0; vertex < positions.length / 3; vertex++) {

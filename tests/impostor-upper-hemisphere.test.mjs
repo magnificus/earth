@@ -26,6 +26,17 @@ test("all non-tree vegetation opts in while trees retain the full range", () => 
   assert.doesNotMatch(source("TreeImpostor.ts"), /upperHemisphereOnly: true/);
 });
 
+test("trees capture and render a dedicated view from below", () => {
+  const captureSource = source("Impostor.ts");
+  const shaderSource = source("TreeField.ts");
+
+  assert.match(captureSource, /normal: new Vector3\(0, -1, 0\)/);
+  assert.match(captureSource, /upperHemisphereOnly\s*\? faces\.filter/);
+  assert.match(shaderSource, /face = 5\.0; faceNormal = vec3\(0\.0, -1\.0, 0\.0\)/);
+  assert.match(shaderSource, /uniform sampler2D atlas5;/);
+  assert.match(shaderSource, /assets\.textures\.length > 5 \? 1 : 0/);
+});
+
 test("bush impostors preserve their asymmetric regional silhouettes at runtime", () => {
   const bushSource = source("BushImpostor.ts");
 

@@ -66,9 +66,9 @@ test("a URL time override fixes both the sun and the settings clock", () => {
   assert.match(controls, /this\.setClockMode\(options\.clockSettings\.mode\)/);
 });
 
-test("live date and time share the accelerated game clock", () => {
-  assert.match(gameTime, /GAME_TIME_SPEED = 24/);
-  assert.match(gameTime, /new Date\(2026, 0, 1, 0, 0, 0, 0\)/);
+test("live date and time share the shifted automatic game clock", () => {
+  assert.match(gameTime, /GAME_YEAR_OFFSET = 100/);
+  assert.match(gameTime, /GAME_TIME_OFFSET_HOURS = -4/);
   assert.match(solarLighting, /const date = getGameDate\(\)/);
   assert.match(controls, /const gameDate = getGameDate\(\)/);
   assert.match(controls, /CLOCK_UPDATE_INTERVAL_MS = 1_000/);
@@ -85,10 +85,11 @@ test("the simulation date can be fixed from the settings menu or URL", () => {
   assert.match(solarLighting, /setDate\(date\?: string\)/);
 });
 
-test("location names are geocoded and passed through coordinate navigation", () => {
+test("location names are geocoded and passed through destination navigation", () => {
   assert.match(controls, /aria-label", "Place or address"/);
   assert.match(controls, /geocodeLocationName\(this\.placeInput\.value\)/);
   assert.match(controls, /onLocationChange\(location\)/);
+  assert.match(game, /onLocationChange: \(target\) => this\.reloadAtLocation\(target\)/);
   assert.match(geocoding, /q: normalizedQuery/);
   assert.match(geocoding, /format: "jsonv2"/);
   assert.match(geocoding, /limit: "1"/);
@@ -134,12 +135,13 @@ test("remote players render as red geographic orbs and the local player stays hi
   assert.doesNotMatch(game, /remotePlayerMarkers|handleGameEvent|MeshBuilder\.CreateSphere/);
 });
 
-test("keyboard location shortcuts reload a clean scene", () => {
+test("all location controls reload a clean scene", () => {
   assert.match(
     game,
     /private async reloadAtLocation\(target: WorldLocation\): Promise<void>[\s\S]*?this\.worldLocation\.update\(target\);[\s\S]*?playerPresence\.publishDestination[\s\S]*?window\.location\.reload\(\)/,
   );
   assert.match(playerPresence, /publishDestination[\s\S]*?this\.dispatchPose/);
+  assert.match(game, /onLocationChange: \(target\) => this\.reloadAtLocation\(target\)/);
   assert.match(game, /void this\.reloadAtLocation\(EXAMPLE_LOCATIONS\[locationIndex\]\)/);
   assert.match(game, /Random location:[\s\S]*?await this\.reloadAtLocation\(target\)/);
   assert.doesNotMatch(game, /terrainLocationIndex|changeTerrainLocation/);

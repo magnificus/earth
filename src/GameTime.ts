@@ -1,19 +1,10 @@
-export const GAME_TIME_SPEED = 24;
+export const GAME_YEAR_OFFSET = 100;
+export const GAME_TIME_OFFSET_HOURS = -4;
 
-/** Real-world instant at which the accelerated game calendar began. */
-export const GAME_TIME_EPOCH = new Date(2026, 0, 1, 0, 0, 0, 0).getTime();
-
-/** Returns local game time, advancing 24 hours per real-world hour. */
+/** Returns live local time shifted 100 calendar years ahead and four hours back. */
 export function getGameDate(now = Date.now()): Date {
-  const gameElapsed = (now - GAME_TIME_EPOCH) * GAME_TIME_SPEED;
-  const civilTime = new Date(Date.UTC(2026, 0, 1) + gameElapsed);
-  return new Date(
-    civilTime.getUTCFullYear(),
-    civilTime.getUTCMonth(),
-    civilTime.getUTCDate(),
-    civilTime.getUTCHours(),
-    civilTime.getUTCMinutes(),
-    civilTime.getUTCSeconds(),
-    civilTime.getUTCMilliseconds(),
-  );
+  const date = new Date(now);
+  date.setFullYear(date.getFullYear() + GAME_YEAR_OFFSET);
+  date.setTime(date.getTime() + GAME_TIME_OFFSET_HOURS * 60 * 60 * 1_000);
+  return date;
 }

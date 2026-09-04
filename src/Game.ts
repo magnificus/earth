@@ -222,9 +222,9 @@ export class Game {
     this.scene = new Scene(this.engine);
     this.layerFades = new LayerFades({
       refreshShadows: () => this.solarLighting?.refreshShadows(),
-      refreshShadowsDuringFade: () => {
-        if (!this.engine.isWebGPU) this.solarLighting?.refreshShadows();
-      },
+      // Refreshing the shadow framebuffer on every fade frame can overlap
+      // streamed capture state on WebGL. The settled callback below is enough.
+      refreshShadowsDuringFade: () => undefined,
     });
     this.playerPresence = new PlayerPresence(this.scene, integration);
     window.addEventListener("pagehide", this.handlePageHide);
@@ -321,13 +321,14 @@ export class Game {
       getGroundEyeHeight: (x, z, referenceEyeHeight) => (
         this.getGroundEyeHeight(x, z, referenceEyeHeight)
       ),
-      isScenePositionLoaded: (x, z) => this.tileAtScenePosition(x, z) !== undefined,
+      isScenePositionLoaded: (x, z) => this.isScenePositionReady(x, z),
       isMenuOpen: () => this.sceneControls?.isOpen ?? false,
       onPointerLockExit: () => {
         if (!this.sceneControls?.isOpen) this.sceneControls?.setMenuOpen(true);
       },
     });
 
+    await reportInitializationProgress(onProgress, "Connecting to game server", 5);
     const presenceSession = await this.playerPresence.connect(this.worldLocation.value);
     const location = presenceSession.location;
     this.solarLighting = new SolarLighting(
@@ -340,8 +341,8 @@ export class Game {
     this.vegetationDate = this.solarLighting.currentDate;
     if (this.waterReflectionsEnabled) this.enableWaterReflections(camera);
 
-    // Load terrain at the active example location. Only the center tile
-    // blocks the loading screen; the rest streams in from the render loop.
+    // Give the core native terrain and visible stand-ins before dismissing the
+    // loading screen. Full detail can then replace them without a blank world.
     await this.startWorld(location, onProgress);
     if (presenceSession.restoredPose) this.playerControls.applyRestoredPose(presenceSession.restoredPose);
     this.publishLocalPlayerPose(true);
@@ -361,7 +362,7 @@ export class Game {
         this.clockSettings.setManualTimeOfDay(hours);
         if (this.clockSettings.value.mode === "manual") this.solarLighting?.setTimeOfDay(hours);
       },
-      onLocationChange: (target) => this.changeToCoordinates(target),
+      onLocationChange: (target) => this.reloadAtLocation(target),
       onMenuOpenChange: (isOpen) => this.setMenuOpen(isOpen),
     });
     this.setupDebugControls();
@@ -386,15 +387,52 @@ export class Game {
     this.solarLighting?.setLocation(target.lat, target.lon);
     await reportInitializationProgress(onProgress, "Loading terrain elevation", 10);
     const centerTile = worldTileAtLocation(target.lat, target.lon, this.gridLevel);
-    // Only the center tile is awaited; every other tile streams in from the
-    // render loop, nearest first.
-    await this.streamTile(
-      centerTile,
-      true,
-      generation,
-      onProgress,
-      () => this.placeCameraAtLocation(target),
+    const detailWindow = worldTileWindowOffsetsAtLocation(
+      target.lat,
+      target.lon,
+      this.sceneSettings.value.detailTilesAcross,
+      centerTile.level,
     );
+    const scale = 2 ** centerTile.level;
+    const coreTiles: Array<{ id: WorldTileId; distanceSquared: number }> = [];
+    for (let dy = detailWindow.minimumY; dy <= detailWindow.maximumY; dy++) {
+      const y = centerTile.y + dy;
+      if (y < 0 || y >= scale) continue;
+      for (let dx = detailWindow.minimumX; dx <= detailWindow.maximumX; dx++) {
+        coreTiles.push({
+          id: {
+            level: centerTile.level,
+            x: ((centerTile.x + dx) % scale + scale) % scale,
+            y,
+          },
+          distanceSquared: dx * dx + dy * dy,
+        });
+      }
+    }
+    coreTiles.sort((a, b) => a.distanceSquared - b.distanceSquared);
+
+    // Supplying a progress callback selects fast impostor capture and keeps
+    // each core tile inside this initial load, including coordinate changes
+    // that do not have a page-level loading overlay.
+    const coreTileCount = coreTiles.length;
+    for (let index = 0; index < coreTileCount; index++) {
+      const item = coreTiles[index];
+      const tileProgress: InitializationProgress = (step, progress) => {
+        onProgress?.(
+          coreTileCount > 1 ? `Loading core tiles (${index + 1}/${coreTileCount}): ${step}` : step,
+          10 + ((index + progress / 100) / coreTileCount) * 87,
+        );
+      };
+      await this.streamTile(
+        item.id,
+        index === 0,
+        generation,
+        tileProgress,
+        index === 0 ? () => this.placeCameraAtLocation(target) : undefined,
+        true,
+      );
+      if (generation !== this.streamingGeneration) return;
+    }
     this.worldLocation.update(target);
     this.sceneControls?.setLocation(target);
     if (this.terrainCoordinateFrame && this.terrainMetersPerUnit) {
@@ -415,6 +453,7 @@ export class Game {
     generation: number,
     onProgress?: InitializationProgress,
     onTerrainReady?: () => void,
+    standInsOnly = false,
   ): Promise<void> {
     const key = worldTileKey(id);
     if (this.activeTileBuilds.has(key)) return;
@@ -426,7 +465,11 @@ export class Game {
       }
       if (!record) return;
       if (generation === this.streamingGeneration) onTerrainReady?.();
-      if (wantDetail && !record.detailed) {
+      if (standInsOnly) {
+        if (!record.farTreeField) {
+          await this.buildFarTrees(record, generation, onProgress ? "fast" : "cooperative");
+        }
+      } else if (wantDetail && !record.detailed) {
         try {
           await this.buildTileDetail(record, generation, onProgress);
         } catch (error: unknown) {
@@ -607,6 +650,8 @@ export class Game {
       meshDepth,
       subdivisions,
       metersPerUnit,
+      worldOffsetX: offset.x,
+      worldOffsetZ: offset.z,
       landCover,
       yieldControl,
     });
@@ -972,7 +1017,11 @@ export class Game {
    * impostors only, no models, no shadows, and no per-frame LOD work. Forests
    * then read all the way to the fog instead of ending at the detail ring.
    */
-  private async buildFarTrees(record: StreamedTile, generation: number): Promise<void> {
+  private async buildFarTrees(
+    record: StreamedTile,
+    generation: number,
+    impostorCaptureMode: "fast" | "cooperative" = "cooperative",
+  ): Promise<void> {
     const metersPerUnit = this.terrainMetersPerUnit;
     if (!metersPerUnit) return;
     const mapWays = await this.loadMapTiles(record);
@@ -1011,7 +1060,8 @@ export class Game {
       includeModels: false,
       forceLowestImpostorLod: true,
       renderMode: "impostors",
-      yieldControl: this.streamingYielder,
+      yieldControl: impostorCaptureMode === "cooperative" ? this.streamingYielder : undefined,
+      impostorCaptureMode,
       startDisabled: true,
     });
     if (generation !== this.streamingGeneration || record.farTreeField) {
@@ -1181,6 +1231,11 @@ export class Game {
 
     if (generation !== this.streamingGeneration || record.terrain.isDisposed()) return;
 
+    // The cooperative preparation cached an earlier camera position while the
+    // field was disabled. Repack and upload once after enabling so a late tile
+    // cannot fade its stand-in before its real model slots are renderable.
+    this.updateVegetationLod(record);
+
     const farTrees = record.farTreeField;
     this.layerFades.begin(0, 1, (fade) => {
       for (const field of fields) {
@@ -1196,7 +1251,6 @@ export class Game {
     }, true);
 
     this.refreshShadowCasters();
-    this.updateVegetationLod();
   }
 
   /** Rebuilds the shadow render list from every live detail layer. */
@@ -1601,7 +1655,7 @@ export class Game {
       : this.vegetationLodDistanceMeters;
   }
 
-  private updateVegetationLod(): void {
+  private updateVegetationLod(forceRecord?: StreamedTile): void {
     const camera = this.scene.activeCamera;
     const metersPerUnit = this.terrainMetersPerUnit;
     if (!camera || !metersPerUnit) return;
@@ -1615,11 +1669,12 @@ export class Game {
       distanceMeters: number,
       originX = field.root.position.x,
       originZ = field.root.position.z,
+      forceFullUpdate = false,
     ): void => {
       localPosition.copyFrom(cameraPosition);
       localPosition.x -= originX;
       localPosition.z -= originZ;
-      field.updateLod(localPosition, distanceMeters);
+      field.updateLod(localPosition, distanceMeters, forceFullUpdate);
     };
     for (const record of this.tiles.values()) {
       if (!VEGETATION_FIELD_KINDS.some((kind) => record[kind]) && !record.barrierField) continue;
@@ -1632,11 +1687,18 @@ export class Game {
       const dx = cameraPosition.x - record.offsetX;
       const dz = cameraPosition.z - record.offsetZ;
       const withinReach = dx * dx + dz * dz <= reachUnits * reachUnits;
-      if (!withinReach && record.lodResolved) continue;
+      const forceFullUpdate = record === forceRecord;
+      if (!forceFullUpdate && !withinReach && record.lodResolved) continue;
       record.lodResolved = !withinReach;
       for (const kind of VEGETATION_FIELD_KINDS) {
         const field = record[kind];
-        if (field) updateField(field, this.fieldLodDistance(kind));
+        if (field) updateField(
+          field,
+          this.fieldLodDistance(kind),
+          field.root.position.x,
+          field.root.position.z,
+          forceFullUpdate,
+        );
       }
       if (record.barrierField && record.mapFeatures) {
         updateField(
@@ -1644,6 +1706,7 @@ export class Game {
           this.vegetationLodDistanceMeters,
           record.mapFeatures.position.x,
           record.mapFeatures.position.z,
+          forceFullUpdate,
         );
       }
     }
@@ -1696,11 +1759,6 @@ export class Game {
       }
     }
     window.location.reload();
-  }
-
-  private async changeToCoordinates(target: WorldLocation): Promise<void> {
-    console.log(`Loading coordinates: lon ${target.lon.toFixed(6)}, lat ${target.lat.toFixed(6)}`);
-    await this.startWorld(target);
   }
 
   private setMenuOpen(isOpen: boolean): void {
@@ -1949,6 +2007,12 @@ export class Game {
     return this.tiles.get(worldTileKey(worldTileAtLocation(lat, lon, this.gridLevel)));
   }
 
+  /** Bare terrain is not ready for entry until it has visible world content. */
+  private isScenePositionReady(x: number, z: number): boolean {
+    const record = this.tileAtScenePosition(x, z);
+    return record !== undefined && (record.detailed || record.farTreeField !== undefined);
+  }
+
   private getGroundEyeHeight(
     x: number,
     z: number,
@@ -2021,6 +2085,8 @@ export class Game {
       meshDepth: number;
       subdivisions: number;
       metersPerUnit: number;
+      worldOffsetX?: number;
+      worldOffsetZ?: number;
       landCover?: LandCoverSampler;
       yieldControl?: FrameBudgetYielder;
     },

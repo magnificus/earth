@@ -14,6 +14,7 @@ import { GameServer } from "./GameServer";
 import type { GameStateRepository } from "./GameStateRepository";
 
 const ACTOR_ID_STORAGE_KEY = "earth.tab-actor-id.v1";
+const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;
 
 interface BroadcastChannelLike {
   onmessage: ((event: MessageEvent<unknown>) => void) | null;
@@ -171,24 +172,32 @@ export class WebSocketGameConnection implements GameConnection {
   private dispatchQueue: Promise<void> = Promise.resolve();
   private resolveConnect?: (snapshot: GameSnapshot) => void;
   private rejectConnect?: (error: Error) => void;
+  private connectTimeout?: ReturnType<typeof setTimeout>;
+  private readonly connectTimeoutMilliseconds: number;
 
-  constructor(url: string) {
+  constructor(url: string, connectTimeoutMilliseconds = DEFAULT_CONNECTION_TIMEOUT_MS) {
     this.url = url;
+    this.connectTimeoutMilliseconds = connectTimeoutMilliseconds;
   }
 
   connect(request: JoinGameRequest): Promise<GameSnapshot> {
     if (this.socket) return Promise.reject(new Error("This game connection is already open."));
-    this.socket = new WebSocket(this.url);
-    this.socket.onopen = () => this.socket?.send(JSON.stringify({ type: "join", request }));
-    this.socket.onmessage = (message) => this.handleMessage(message.data);
-    this.socket.onerror = () => this.failConnect(new Error("Could not connect to the game backend."));
-    this.socket.onclose = () => {
-      this.failConnect(new Error("The game backend connection closed."));
-      this.socket = undefined;
-    };
     return new Promise<GameSnapshot>((resolve, reject) => {
       this.resolveConnect = resolve;
       this.rejectConnect = reject;
+      const socket = new WebSocket(this.url);
+      this.socket = socket;
+      socket.onopen = () => socket.send(JSON.stringify({ type: "join", request }));
+      socket.onmessage = (message) => this.handleMessage(message.data);
+      socket.onerror = () => this.failConnect(new Error("Could not connect to the game backend."));
+      socket.onclose = () => {
+        this.failConnect(new Error("The game backend connection closed."));
+        if (this.socket === socket) this.socket = undefined;
+      };
+      this.connectTimeout = setTimeout(() => {
+        this.failConnect(new Error("The game backend did not respond in time."));
+        socket.close();
+      }, this.connectTimeoutMilliseconds);
     });
   }
 
@@ -210,6 +219,7 @@ export class WebSocketGameConnection implements GameConnection {
 
   async close(): Promise<void> {
     await this.dispatchQueue;
+    this.clearConnectTimeout();
     this.socket?.close();
     this.socket = undefined;
     this.listeners.clear();
@@ -224,6 +234,7 @@ export class WebSocketGameConnection implements GameConnection {
       return;
     }
     if (message.type === "snapshot" && message.snapshot) {
+      this.clearConnectTimeout();
       this.resolveConnect?.(message.snapshot);
       this.resolveConnect = undefined;
       this.rejectConnect = undefined;
@@ -235,9 +246,16 @@ export class WebSocketGameConnection implements GameConnection {
   }
 
   private failConnect(error: Error): void {
+    this.clearConnectTimeout();
     this.rejectConnect?.(error);
     this.resolveConnect = undefined;
     this.rejectConnect = undefined;
+  }
+
+  private clearConnectTimeout(): void {
+    if (this.connectTimeout === undefined) return;
+    clearTimeout(this.connectTimeout);
+    this.connectTimeout = undefined;
   }
 }
 

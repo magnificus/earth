@@ -58,6 +58,7 @@ import {
   BUILDING_GROUND_OVERLAP_METERS,
   BUILDING_INTERIOR_CHECK_INTERVAL_MS,
   BUILDING_INTERIOR_LOAD_DISTANCE_METERS,
+  BUILDING_INTERIOR_RENDERED_FLOOR_COUNT,
   BUILDING_INTERIOR_UNLOAD_DISTANCE_METERS,
   BUILDING_INTERIORS_PER_CHECK,
   BUILDING_ROOF_EAVE_CLEARANCE_METERS,
@@ -85,6 +86,11 @@ import {
 } from "./BuildingMaterial";
 
 export type { BuildingRenderOptions } from "./BuildingRendererTypes";
+
+interface InteriorFloorRange {
+  start: number;
+  end: number;
+}
 
 /** Compiles semantic building plans into deterministic Babylon geometry. */
 export class ProceduralBuildingRenderer {
@@ -209,7 +215,10 @@ export class ProceduralBuildingRenderer {
           interiorCenter.z,
         ),
         radiusMeters: interiorRadiusMeters,
-        load: () => createInteriorMesh(
+        baseElevationMeters: prepared.baseElevation,
+        storyHeightMeters: (wallTopElevation - prepared.baseElevation) / detailed.floorCount,
+        floorCount: detailed.floorCount,
+        load: (floorStart, floorEnd) => createInteriorMesh(
           scene,
           plan,
           prepared.outline,
@@ -217,6 +226,7 @@ export class ProceduralBuildingRenderer {
           wallTopElevation,
           options,
           appearance,
+          { start: floorStart, end: floorEnd },
         ),
       } satisfies PendingBuildingInterior,
     };
@@ -354,6 +364,7 @@ function createInteriorMesh(
   topElevation: number,
   options: BuildingRenderOptions,
   appearance: BuildingAppearance,
+  floorRange: InteriorFloorRange,
 ): Mesh | undefined {
   const interior = createEnterableBuilding(
     scene,
@@ -364,6 +375,8 @@ function createInteriorMesh(
     options,
     appearance,
     "interior",
+    new Set(),
+    floorRange,
   );
   const merged = Mesh.MergeMeshes(interior.parts, false, true);
   if (!merged) {
@@ -371,7 +384,12 @@ function createInteriorMesh(
     return undefined;
   }
   for (const part of interior.parts) part.dispose(false, true);
-  merged.metadata = { metersPerUnit: options.metersPerUnit };
+  merged.metadata = {
+    metersPerUnit: options.metersPerUnit,
+    renderedFloorStart: floorRange.start,
+    renderedFloorEnd: floorRange.end,
+    renderedFloorCount: floorRange.end - floorRange.start,
+  };
   return stageBuildingMesh(merged);
 }
 
@@ -390,6 +408,7 @@ function createEnterableBuilding(
   appearance: BuildingAppearance,
   part: "exterior" | "interior",
   blockedFacadeEdges: ReadonlySet<number> = new Set(),
+  interiorFloorRange?: InteriorFloorRange,
 ): DetailedBuildingParts {
   const usableHeight = Math.max(0, topElevation - baseElevation);
   const profile = buildingProfile(plan.buildingClass);
@@ -486,8 +505,13 @@ function createEnterableBuilding(
   let windowCount = 0;
 
   if (part === "interior") {
+    const floorStart = Math.max(0, Math.min(floorCount, interiorFloorRange?.start ?? 0));
+    const floorEnd = Math.max(floorStart, Math.min(
+      floorCount,
+      interiorFloorRange?.end ?? floorCount,
+    ));
     const floorColor = mixColor(appearance.wall, new Color3(0.34, 0.31, 0.27), 0.48);
-    for (let floor = 0; floor < floorCount; floor++) {
+    for (let floor = floorStart; floor < floorEnd; floor++) {
       const slabBottom = baseElevation + floor * storyHeight;
       const slab = createBuildingPrism(
         scene,
@@ -504,7 +528,7 @@ function createEnterableBuilding(
     }
 
     if (stairs.length > 0) {
-      for (let floor = 0; floor < stairs.length; floor++) {
+      for (let floor = floorStart; floor < Math.min(floorEnd, stairs.length); floor++) {
         createStairFlight(
           parts,
           scene,
@@ -520,7 +544,7 @@ function createEnterableBuilding(
 
     if (plannedInterior) {
       const wallColor = mixColor(appearance.wall, new Color3(0.82, 0.79, 0.72), 0.18);
-      for (let floor = 0; floor < floorCount; floor++) {
+      for (let floor = floorStart; floor < floorEnd; floor++) {
         addPlannedInteriorWalls(
           parts,
           scene,
@@ -1821,6 +1845,35 @@ function configureLazyInteriors(
       exterior.metadata.loadedInteriorCount--;
     }
     for (const loadedInterior of loadedInteriors) {
+      const floorRange = nearestInteriorFloorRange(
+        loadedInterior.pending,
+        localCamera.y * metersPerUnit,
+      );
+      if (floorRange.start !== loadedInterior.floorStart ||
+          floorRange.end !== loadedInterior.floorEnd) {
+        const replacementSource = loadedInterior.pending.load(floorRange.start, floorRange.end);
+        const replacement = replacementSource
+          ? ProceduralBuildingRenderer.merge(
+            [replacementSource],
+            "buildingInteriors",
+            parent,
+          )
+          : undefined;
+        if (replacement) {
+          configureLoadedInteriorVisibility(
+            replacement,
+            loadedInterior.pending,
+            parent,
+            metersPerUnit,
+          );
+          replacement.checkCollisions = true;
+          replacement.setEnabled(true);
+          loadedInterior.mesh.dispose(false, true);
+          loadedInterior.mesh = replacement;
+          loadedInterior.floorStart = floorRange.start;
+          loadedInterior.floorEnd = floorRange.end;
+        }
+      }
       // Keep the render cutoff explicit on the interior mesh itself. This is
       // intentionally separate from residency so a stale/culled exterior
       // callback can never make an interior visible at distance.
@@ -1847,7 +1900,11 @@ function configureLazyInteriors(
       const candidate = pendingInteriors[nearestIndex];
       if (nearestDistanceMeters > BUILDING_INTERIOR_LOAD_DISTANCE_METERS) break;
       pendingInteriors.splice(nearestIndex, 1);
-      const interiorSource = candidate.load();
+      const floorRange = nearestInteriorFloorRange(
+        candidate,
+        localCamera.y * metersPerUnit,
+      );
+      const interiorSource = candidate.load(floorRange.start, floorRange.end);
       if (!interiorSource) continue;
       const interior = ProceduralBuildingRenderer.merge(
         [interiorSource],
@@ -1855,25 +1912,16 @@ function configureLazyInteriors(
         parent,
       );
       if (!interior) continue;
-      interior.onBeforeRenderObservable.add(() => {
-        const activeCamera = interior.getScene().activeCamera;
-        if (!activeCamera) return;
-        const currentParentWorld = parent.computeWorldMatrix(true);
-        const currentLocalCamera = Vector3.TransformCoordinates(
-          activeCamera.globalPosition,
-          currentParentWorld.clone().invert(),
-        );
-        interior.isVisible = interiorDistanceMeters(
-          candidate.center,
-          candidate.radiusMeters,
-          currentLocalCamera,
-          metersPerUnit,
-        ) <=
-          BUILDING_INTERIOR_UNLOAD_DISTANCE_METERS;
-      });
+      configureLoadedInteriorVisibility(interior, candidate, parent, metersPerUnit);
       interior.checkCollisions = true;
       interior.setEnabled(true);
-      loadedInteriors.push({ center: candidate.center, pending: candidate, mesh: interior });
+      loadedInteriors.push({
+        center: candidate.center,
+        pending: candidate,
+        mesh: interior,
+        floorStart: floorRange.start,
+        floorEnd: floorRange.end,
+      });
       exterior.metadata.loadedInteriorCount++;
       loaded++;
     }
@@ -1882,6 +1930,50 @@ function configureLazyInteriors(
   });
   exterior.onDisposeObservable.add(() => {
     scene.onAfterRenderObservable.remove(afterRenderObserver);
+  });
+}
+
+function nearestInteriorFloorRange(
+  pending: PendingBuildingInterior,
+  cameraElevationMeters: number,
+): InteriorFloorRange {
+  const renderedFloorCount = Math.min(
+    BUILDING_INTERIOR_RENDERED_FLOOR_COUNT,
+    pending.floorCount,
+  );
+  const cameraFloor = Math.max(0, Math.min(
+    pending.floorCount - 1,
+    Math.floor(
+      (cameraElevationMeters - pending.baseElevationMeters) / pending.storyHeightMeters,
+    ),
+  ));
+  const start = Math.max(0, Math.min(
+    pending.floorCount - renderedFloorCount,
+    cameraFloor - Math.floor(renderedFloorCount / 2),
+  ));
+  return { start, end: start + renderedFloorCount };
+}
+
+function configureLoadedInteriorVisibility(
+  interior: Mesh,
+  pending: PendingBuildingInterior,
+  parent: TransformNode,
+  metersPerUnit: number,
+): void {
+  interior.onBeforeRenderObservable.add(() => {
+    const activeCamera = interior.getScene().activeCamera;
+    if (!activeCamera) return;
+    const currentParentWorld = parent.computeWorldMatrix(true);
+    const currentLocalCamera = Vector3.TransformCoordinates(
+      activeCamera.globalPosition,
+      currentParentWorld.clone().invert(),
+    );
+    interior.isVisible = interiorDistanceMeters(
+      pending.center,
+      pending.radiusMeters,
+      currentLocalCamera,
+      metersPerUnit,
+    ) <= BUILDING_INTERIOR_UNLOAD_DISTANCE_METERS;
   });
 }
 

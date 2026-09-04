@@ -7,8 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
-const DEBUG_PORT = 9341;
+const DEBUG_PORT = Number(process.env.EARTH_DEBUG_PORT ?? 9341);
 const APP_URL = process.env.EARTH_APP_URL ?? "http://localhost:3000/?performance-debug";
+const INITIAL_LOCATION = process.env.EARTH_LOCATION;
 const profile = mkdtempSync(join(tmpdir(), "earth-shadow-feedback-"));
 const chromeArguments = [
   `--remote-debugging-port=${DEBUG_PORT}`,
@@ -129,6 +130,12 @@ try {
       }
     })()`,
   });
+  if (INITIAL_LOCATION) {
+    const location = JSON.parse(INITIAL_LOCATION);
+    await send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `localStorage.setItem("earth.location.v1", ${JSON.stringify(JSON.stringify(location))})`,
+    });
+  }
   await send("Page.navigate", { url: APP_URL });
   for (let attempt = 0; attempt < 240; attempt++) {
     if (await evaluate("!document.getElementById('loading')")) break;
@@ -148,6 +155,12 @@ try {
     }
     throw new Error("EngineStore not found in module cache");
   })()`);
+
+  const moveTiles = Number(process.env.EARTH_MOVE_TILES ?? 0);
+  if (moveTiles !== 0) {
+    await evaluate(`window.__earthScene.activeCamera.position.x += ${JSON.stringify(moveTiles * 25)}`);
+    await sleep(1_000);
+  }
 
   for (let refresh = 0; refresh < 8; refresh++) {
     await evaluate(`(() => {

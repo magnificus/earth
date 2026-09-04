@@ -73,13 +73,18 @@ export interface InteriorPlanningAttempt {
 export interface PendingBuildingInterior {
   center: Vector3;
   radiusMeters: number;
-  load: () => Mesh | undefined;
+  baseElevationMeters: number;
+  storyHeightMeters: number;
+  floorCount: number;
+  load: (floorStart: number, floorEnd: number) => Mesh | undefined;
 }
 
 export interface LoadedBuildingInterior {
   center: Vector3;
   pending: PendingBuildingInterior;
   mesh: Mesh;
+  floorStart: number;
+  floorEnd: number;
 }
 
 export interface StairLayout {

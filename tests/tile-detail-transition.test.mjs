@@ -5,6 +5,30 @@ import test from "node:test";
 const game = readFileSync(new URL("../src/Game.ts", import.meta.url), "utf8");
 const treeField = readFileSync(new URL("../src/TreeField.ts", import.meta.url), "utf8");
 
+test("loads fast stand-ins across the core before revealing a location", () => {
+  assert.match(
+    game,
+    /const coreTiles:[\s\S]*?detailWindow\.minimumY[\s\S]*?detailWindow\.maximumY[\s\S]*?detailWindow\.minimumX[\s\S]*?detailWindow\.maximumX/,
+  );
+  assert.match(game, /coreTiles\.sort\(\(a, b\) => a\.distanceSquared - b\.distanceSquared\)/);
+  assert.match(
+    game,
+    /for \(let index = 0; index < coreTileCount; index\+\+\)[\s\S]*?await this\.streamTile\([\s\S]*?item\.id,[\s\S]*?index === 0,[\s\S]*?tileProgress,[\s\S]*?index === 0[\s\S]*?true/,
+  );
+  assert.match(
+    game,
+    /if \(standInsOnly\)[\s\S]*?buildFarTrees\(record, generation, onProgress \? "fast" : "cooperative"\)/,
+  );
+});
+
+test("does not let the player enter a bare terrain tile before its impostors are ready", () => {
+  assert.match(game, /isScenePositionLoaded: \(x, z\) => this\.isScenePositionReady\(x, z\)/);
+  assert.match(
+    game,
+    /private isScenePositionReady[\s\S]*?record\.detailed \|\| record\.farTreeField !== undefined/,
+  );
+});
+
 test("keeps far-tree impostors visible through the native terrain upgrade", () => {
   assert.match(
     game,
@@ -75,5 +99,9 @@ test("cross-fades all detailed vegetation with the retained tree impostors", () 
   assert.match(
     game,
     /private async activateTileVegetation[\s\S]*?this\.layerFades\.begin\(0, 1, \(fade\) => \{[\s\S]*?field\.setFade\(fade\);[\s\S]*?farTrees\.setFade\(1 - fade\);/,
+  );
+  assert.match(
+    game,
+    /private async activateTileVegetation[\s\S]*?this\.updateVegetationLod\(record\);[\s\S]*?this\.layerFades\.begin\(0, 1/,
   );
 });

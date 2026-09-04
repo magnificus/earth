@@ -438,6 +438,7 @@ uniform sampler2D atlas1;
 uniform sampler2D atlas2;
 uniform sampler2D atlas3;
 uniform sampler2D atlas4;
+uniform sampler2D atlas5;
 uniform vec2 samplePosition;
 uniform float gridSize;
 uniform vec2 atlasTileCounts;
@@ -448,7 +449,8 @@ vec4 atlasSample(vec2 uv) {
   if (faceIndex < 1.5) return texture2D(atlas1, uv);
   if (faceIndex < 2.5) return texture2D(atlas2, uv);
   if (faceIndex < 3.5) return texture2D(atlas3, uv);
-  return texture2D(atlas4, uv);
+  if (faceIndex < 4.5) return texture2D(atlas4, uv);
+  return texture2D(atlas5, uv);
 }
 vec4 frame(vec2 tile) {
   vec2 localUV = mix(vec2(tileInset), vec2(1.0 - tileInset), vUV);
@@ -496,7 +498,7 @@ function createDemoReference(
   }, {
     attributes: ["position", "uv"],
     uniforms: ["viewProjection", "center", "billboardRight", "billboardUp", "diameter", "samplePosition", "gridSize", "atlasTileCounts", "faceIndex", "tileInset"],
-    samplers: ["atlas0", "atlas1", "atlas2", "atlas3", "atlas4"],
+    samplers: ["atlas0", "atlas1", "atlas2", "atlas3", "atlas4", "atlas5"],
     needAlphaBlending: false,
   });
   material.backFaceCulling = false;
@@ -517,8 +519,8 @@ function configureDemoReference(
   center: Vector3,
 ): void {
   const absolute = new Vector3(Math.abs(direction.x), Math.abs(direction.y), Math.abs(direction.z));
-  const faceIndex = direction.y >= 0 && absolute.y >= absolute.x && absolute.y >= absolute.z
-    ? 2
+  const faceIndex = absolute.y >= absolute.x && absolute.y >= absolute.z
+    ? direction.y >= 0 ? 2 : 5
     : absolute.x >= absolute.z
       ? direction.x >= 0 ? 0 : 1
       : direction.z >= 0 ? 3 : 4;
@@ -553,7 +555,7 @@ function validateCubeGeometry(mesh: import("@babylonjs/core").Mesh): GeometryVal
   for (let index = 0; index < normals.length; index += 3) {
     faceNormals.add(`${Math.round(normals[index])},${Math.round(normals[index + 1])},${Math.round(normals[index + 2])}`);
   }
-  const expectedNormals = ["1,0,0", "-1,0,0", "0,1,0", "0,0,1", "0,0,-1"];
+  const expectedNormals = ["1,0,0", "-1,0,0", "0,1,0", "0,0,1", "0,0,-1", "0,-1,0"];
   let frontFaceWinding = true;
   for (let index = 0; index < indices.length; index += 3) {
     const first = Vector3.FromArray(positions, indices[index] * 3);
@@ -570,8 +572,8 @@ function validateCubeGeometry(mesh: import("@babylonjs/core").Mesh): GeometryVal
     faceNormals: [...faceNormals].sort(),
     frontFaceWinding,
     passed:
-      positions.length / 3 === 20 &&
-      indices.length === 30 &&
+      positions.length / 3 === 24 &&
+      indices.length === 36 &&
       extents.every((extent) => extent > 0) &&
       frontFaceWinding &&
       expectedNormals.every((normal) => faceNormals.has(normal)),

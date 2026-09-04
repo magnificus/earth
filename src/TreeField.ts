@@ -251,14 +251,17 @@ uniform sampler2D atlas1;
 uniform sampler2D atlas2;
 uniform sampler2D atlas3;
 uniform sampler2D atlas4;
+uniform sampler2D atlas5;
 uniform sampler2D lowAtlas0;
 uniform sampler2D lowAtlas1;
 uniform sampler2D lowAtlas2;
 uniform sampler2D lowAtlas3;
 uniform sampler2D lowAtlas4;
+uniform sampler2D lowAtlas5;
 uniform float rotationallySymmetric;
 uniform float rotationalSymmetryOrder;
 uniform float upperHemisphereOnly;
+uniform float lowerHemisphereFace;
 uniform vec2 gridDimensions;
 uniform vec2 atlasTileCounts;
 uniform vec2 tileInset;
@@ -293,7 +296,8 @@ vec4 atlasSample(float face, vec2 uv) {
   if (face < 1.5) return texture2D(atlas1, uv);
   if (face < 2.5) return texture2D(atlas2, uv);
   if (face < 3.5) return texture2D(atlas3, uv);
-  return texture2D(atlas4, uv);
+  if (face < 4.5) return texture2D(atlas4, uv);
+  return texture2D(atlas5, uv);
 }
 
 vec4 lowAtlasSample(float face, vec2 uv) {
@@ -301,7 +305,8 @@ vec4 lowAtlasSample(float face, vec2 uv) {
   if (face < 1.5) return texture2D(lowAtlas1, uv);
   if (face < 2.5) return texture2D(lowAtlas2, uv);
   if (face < 3.5) return texture2D(lowAtlas3, uv);
-  return texture2D(lowAtlas4, uv);
+  if (face < 4.5) return texture2D(lowAtlas4, uv);
+  return texture2D(lowAtlas5, uv);
 }
 
 vec4 frame(float face, vec2 tile, vec2 imageUV, float lodBlend) {
@@ -413,6 +418,9 @@ void main(void) {
     }
   } else if (direction.y >= 0.0 && absoluteDirection.y >= absoluteDirection.x && absoluteDirection.y >= absoluteDirection.z) {
     face = 2.0; faceNormal = vec3(0.0, 1.0, 0.0); faceRight = vec3(1.0, 0.0, 0.0); faceUp = vec3(0.0, 0.0, -1.0);
+    topFacing = 1.0;
+  } else if (lowerHemisphereFace > 0.5 && direction.y < 0.0 && absoluteDirection.y >= absoluteDirection.x && absoluteDirection.y >= absoluteDirection.z) {
+    face = 5.0; faceNormal = vec3(0.0, -1.0, 0.0); faceRight = vec3(1.0, 0.0, 0.0); faceUp = vec3(0.0, 0.0, 1.0);
     topFacing = 1.0;
   } else if (absoluteDirection.x >= absoluteDirection.z) {
     if (direction.x >= 0.0) {
@@ -1172,8 +1180,8 @@ export function createImpostorMaterial(
     { vertexSource: impostorVertexShader, fragmentSource: impostorFragmentShader },
     {
       attributes: ["position", "vegetationColor", "instanceLodBlend"],
-      uniforms: ["world", "viewProjection", "cameraPosition", "captureCenterY", "impostorDepthPull", "captureDimensions", "gridDimensions", "atlasTileCounts", "tileInset", "lowTileInset", "impostorLodNear", "impostorLodFar", "forceLowestLod", "cameraOrthographic", "rotationallySymmetric", "rotationalSymmetryOrder", "upperHemisphereOnly", "sunDirection", "sunColor", "skyColor", "groundColor", "lowLightAlbedoScale", "instanceColorCoverage", "fieldFade", "distanceFadeNear", "distanceFadeFar", "groundColorBlend", "distanceGroundBlend", "distanceGroundColor", "impostorAmbientUpward", "impostorColorContrast", "fogColor", "fogStart", "fogEnd", "vegetationShadowMatrix", "vegetationShadowAtInstanceRoot", "vegetationShadowTexelSize", "vegetationShadowDepthValues", "vegetationShadowEnabled", "vegetationShadowReverseDepth", "vegetationShadowDarkness", "vegetationShadowFloatTexture", ...CLOUD_SHADOW_UNIFORMS, ...WIND_PHASE_UNIFORMS, ...WIND_SHEAR_UNIFORMS],
-      samplers: ["atlas0", "atlas1", "atlas2", "atlas3", "atlas4", "lowAtlas0", "lowAtlas1", "lowAtlas2", "lowAtlas3", "lowAtlas4", "vegetationShadowSampler", "cloudShadowAtlas"],
+      uniforms: ["world", "viewProjection", "cameraPosition", "captureCenterY", "impostorDepthPull", "captureDimensions", "gridDimensions", "atlasTileCounts", "tileInset", "lowTileInset", "impostorLodNear", "impostorLodFar", "forceLowestLod", "cameraOrthographic", "rotationallySymmetric", "rotationalSymmetryOrder", "upperHemisphereOnly", "lowerHemisphereFace", "sunDirection", "sunColor", "skyColor", "groundColor", "lowLightAlbedoScale", "instanceColorCoverage", "fieldFade", "distanceFadeNear", "distanceFadeFar", "groundColorBlend", "distanceGroundBlend", "distanceGroundColor", "impostorAmbientUpward", "impostorColorContrast", "fogColor", "fogStart", "fogEnd", "vegetationShadowMatrix", "vegetationShadowAtInstanceRoot", "vegetationShadowTexelSize", "vegetationShadowDepthValues", "vegetationShadowEnabled", "vegetationShadowReverseDepth", "vegetationShadowDarkness", "vegetationShadowFloatTexture", ...CLOUD_SHADOW_UNIFORMS, ...WIND_PHASE_UNIFORMS, ...WIND_SHEAR_UNIFORMS],
+      samplers: ["atlas0", "atlas1", "atlas2", "atlas3", "atlas4", "atlas5", "lowAtlas0", "lowAtlas1", "lowAtlas2", "lowAtlas3", "lowAtlas4", "lowAtlas5", "vegetationShadowSampler", "cloudShadowAtlas"],
       // Writing depth costs the early depth test, so the dense low vegetation
       // that never needed it compiles without the proxy at all.
       defines: depth.depthProxy ? ["#define IMPOSTOR_DEPTH_PROXY"] : [],
@@ -1213,6 +1221,7 @@ export function createImpostorMaterial(
   material.setFloat("rotationallySymmetric", assets.rotationallySymmetric ? 1 : 0);
   material.setFloat("rotationalSymmetryOrder", assets.rotationalSymmetryOrder);
   material.setFloat("upperHemisphereOnly", assets.upperHemisphereOnly ? 1 : 0);
+  material.setFloat("lowerHemisphereFace", assets.textures.length > 5 ? 1 : 0);
   material.setFloat("lowLightAlbedoScale", 1);
   material.setFloat("instanceColorCoverage", 0);
     setWindShear(material, windShearFraction("tree"));
@@ -1224,7 +1233,7 @@ export function createImpostorMaterial(
   material.setColor3("distanceGroundColor", Color3.White());
   material.setFloat("impostorAmbientUpward", 1);
   material.setFloat("impostorColorContrast", 1);
-  for (let index = 0; index < 5; index++) {
+  for (let index = 0; index < 6; index++) {
     material.setTexture(`atlas${index}`, assets.textures[Math.min(index, assets.textures.length - 1)]);
     material.setTexture(
       `lowAtlas${index}`,

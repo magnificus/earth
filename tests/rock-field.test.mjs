@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { computeWeldedNormals } from "../src/RockGeometry.ts";
 
 const source = readFileSync(new URL("../src/RockField.ts", import.meta.url), "utf8");
+const rockyBeach = readFileSync(new URL("../src/RockyBeachImpostor.ts", import.meta.url), "utf8");
 const game = readFileSync(new URL("../src/Game.ts", import.meta.url), "utf8");
 const streamedTile = readFileSync(new URL("../src/StreamedTile.ts", import.meta.url), "utf8");
 
@@ -12,8 +14,29 @@ test("builds deterministic bare and mossy thin-instanced rock variants", () => {
   assert.match(source, /mossy \? "mossy" : "bare"/);
   assert.match(source, /thinInstanceSetBuffer/);
   assert.match(source, /VertexBuffer\.ColorKind/);
-  assert.match(source, /subdivisions: 2, flat: false/);
-  assert.match(source, /VertexData\.ComputeNormals\(positions, indices, normals\)/);
+  assert.match(source, /subdivisions: 3, flat: false/);
+  assert.match(source, /computeWeldedNormals\(positions, indices\)/);
+});
+
+test("smooths normals across duplicated mesh vertices", () => {
+  const positions = [
+    0, 0, 0, 1, 0, 0, 0, 1, 0,
+    0, 0, 0, 0, 1, 0, 0, 0, 1,
+  ];
+  const normals = computeWeldedNormals(positions, [0, 1, 2, 3, 4, 5]);
+  const inverseSqrtTwo = 1 / Math.sqrt(2);
+  for (const vertex of [0, 3]) {
+    assert.ok(Math.abs(normals[vertex * 3] - inverseSqrtTwo) < 1e-6);
+    assert.ok(Math.abs(normals[vertex * 3 + 1]) < 1e-6);
+    assert.ok(Math.abs(normals[vertex * 3 + 2] - inverseSqrtTwo) < 1e-6);
+  }
+});
+
+test("keeps rock shading geometric and continuous", () => {
+  assert.doesNotMatch(source, /material\.bumpTexture\s*=/);
+  assert.match(source, /material\.detailMap\.bumpLevel = 0/);
+  assert.match(source, /crownVariation = [^;]+ \* equator/);
+  assert.match(rockyBeach, /computeWeldedNormals\(positions, indices\)/);
 });
 
 test("shore rocks form long dense chains aligned to the water boundary", () => {

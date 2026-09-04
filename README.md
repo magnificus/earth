@@ -67,7 +67,7 @@ The output will be in the `dist/` directory.
 
 Open `http://localhost:3000/?tree-impostor` to run the tree-only capture tool.
 The controls configure the number of samples along each cube-face edge and the
-resolution of each capture. The default produces 125 captures: five faces,
+resolution of each capture. The default produces 150 captures: six faces,
 each with a 5 by 5 grid of 192 px frames. Streamed regional tree atlases use
 the same directional grid and frame resolution; only their capture scheduling
 is cooperative so the work can be spread across gameplay frames.
@@ -85,13 +85,13 @@ ratios from each tile's longitude/latitude coordinates first, then captures impo
 species that were actually encountered in that tile.
 After capture, that source mesh is disabled and the scene renders only a
 camera-facing impostor. Its shader selects the dominant cube face and
-bilinearly blends the four nearest frames. `Export ZIP` writes the five face
+bilinearly blends the four nearest frames. `Export ZIP` writes the six face
 atlas PNGs and a JSON manifest; captured alpha is strictly 0 or 255 and RGB is
 black wherever alpha is zero.
 
 The Earth view generates mature trees, saplings, grass, wildflower colonies, bushes, fern
 undergrowth, and low-poly rocks procedurally at startup and thin-instances them across suitable ESA
-WorldCover classes. Mature trees and 3.5 m saplings share the five-face tree
+WorldCover classes. Mature trees and 3.5 m saplings share the six-face tree
 impostor pipeline and geographic species groves. Grass captures only one side and
 the top; directional wildflowers, bushes, and ferns retain several side views. Their atlases use the optional
 upper-hemisphere mode, spending every vertical row on level-to-overhead views
@@ -227,8 +227,8 @@ camera reaches them and through their own high-altitude haze beyond the terrain
 fog; use `?clouds=off` for a cloud-free performance comparison.
 Use `?time=12` to hold the sun at noon when comparing cloud shape and ground
 shadows, and `?date=2026-08-23` to hold the simulation on a specific local
-calendar date. Live game time starts at `2026-01-01 00:00` and advances at 24x
-real time, so one real hour spans one game day. The settings menu's Manual clock
+calendar date. Automatic game time follows the current local time with the year
+shifted 100 years ahead and the clock shifted four hours back. The settings menu's Manual clock
 toggle switches the date and time together. Clock mode and the last manual date
 and time persist across reloads, allowing a reload to regenerate seasonal trees
 for the selected date. `?clock=automatic` or `?clock=manual` can override the

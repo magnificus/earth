@@ -1,6 +1,8 @@
 import type { TerrainData } from "./TerrainData";
 import type { TileBounds, WorldTileArea } from "./WorldGrid";
 
+const TERRAIN_TILE_LOAD_TIMEOUT_MS = 15_000;
+
 /**
  * Utility class for fetching and processing AWS Terrain Tiles.
  * https://registry.opendata.aws/terrain-tiles/
@@ -48,8 +50,22 @@ export class TerrainElevationSource {
     img.crossOrigin = 'anonymous';
 
     await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error(`Failed to load terrain tile: ${url}`));
+      let settled = false;
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        img.onload = null;
+        img.onerror = null;
+        if (error) reject(error);
+        else resolve();
+      };
+      const timeout = setTimeout(() => {
+        finish(new Error(`Terrain tile request timed out: ${url}`));
+        img.src = "";
+      }, TERRAIN_TILE_LOAD_TIMEOUT_MS);
+      img.onload = () => finish();
+      img.onerror = () => finish(new Error(`Failed to load terrain tile: ${url}`));
       img.src = url;
     });
 

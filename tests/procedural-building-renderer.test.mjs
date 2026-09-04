@@ -592,6 +592,46 @@ test("tall buildings remain enterable and include stairs", () => {
   engine.dispose();
 });
 
+test("high-rise interiors render only the five floors nearest the camera", async () => {
+  const engine = new NullEngine();
+  const scene = new Scene(engine);
+  const tower = ProceduralBuildingRenderer.createDetailed(
+    scene,
+    plan(458, { render_height: 80, levels: 20 }),
+    terrain,
+    options,
+  );
+  assert.ok(tower);
+  const merged = ProceduralBuildingRenderer.merge(
+    [tower],
+    "buildings",
+    new TransformNode("root", scene),
+  );
+  assert.ok(merged);
+  scene.activeCamera = new FreeCamera("camera", new Vector3(0, 87, 0), scene);
+  scene.activeCamera.computeWorldMatrix(true);
+
+  scene.onAfterRenderObservable.notifyObservers(scene);
+  let interior = scene.getMeshByName("buildingInteriors");
+  assert.ok(interior);
+  assert.equal(interior.metadata.renderedFloorCount, 5);
+  assert.equal(interior.metadata.renderedFloorStart, 15);
+  assert.equal(interior.metadata.renderedFloorEnd, 20);
+
+  scene.activeCamera.position.y = 11;
+  scene.activeCamera.computeWorldMatrix(true);
+  await new Promise((resolve) => setTimeout(resolve, 130));
+  scene.onAfterRenderObservable.notifyObservers(scene);
+  interior = scene.getMeshByName("buildingInteriors");
+  assert.ok(interior);
+  assert.equal(interior.metadata.renderedFloorCount, 5);
+  assert.equal(interior.metadata.renderedFloorStart, 0);
+  assert.equal(interior.metadata.renderedFloorEnd, 5);
+
+  scene.dispose();
+  engine.dispose();
+});
+
 test("small-footprint high-rises keep fallback stairs on every floor", () => {
   const engine = new NullEngine();
   const scene = new Scene(engine);

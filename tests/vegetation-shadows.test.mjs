@@ -133,9 +133,10 @@ test("does not rerender the static shadow map for camera-relative LOD changes", 
   assert.doesNotMatch(lodUpdate, /refreshShadows\(\)/);
 });
 
-test("refreshes shadows throughout streamed layer cross-fades", () => {
+test("settles streamed shadows without rerendering the framebuffer every fade frame", () => {
   assert.match(layerFades, /if \(refreshShadows\) this\.options\.refreshShadowsDuringFade\(\)/);
-  assert.match(game, /refreshShadowsDuringFade:[\s\S]*?this\.solarLighting\?\.refreshShadows\(\)/);
+  assert.match(game, /refreshShadowsDuringFade: \(\) => undefined/);
+  assert.match(layerFades, /this\.options\.refreshShadows\(\)/);
 });
 
 test("grass models and impostors share terrain-root shadow sampling", () => {
