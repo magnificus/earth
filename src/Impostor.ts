@@ -19,6 +19,8 @@ import { publishGeneratedAsset } from "./GeneratedAssetPreview";
 export interface ImpostorAssets {
   /** Eight directional visibility channels, packed into two 3-by-2 face atlases. */
   exposureTextures?: Texture[];
+  /** Red: per-leaf seasonal turning phase. Green: foliage mask. Same 3-by-2 face layout. */
+  seasonPhaseTexture?: Texture;
   /** Raw RGBA atlases preserve hidden edge colors used by bilinear filtering. */
   textures: Texture[];
   /** Source canvases retained for the capture preview and validation tools. */
@@ -51,6 +53,8 @@ const BACKGROUND_CAPTURE_VIEWS_PER_SLICE = 16;
 
 /** Target height of each frame in the distant impostor atlas. */
 const LOW_RESOLUTION_FRAME_SIZE = 20;
+/** Material data band that outputs seasonal leaf phase and the foliage mask. */
+const SEASON_PHASE_CAPTURE_BAND = 3;
 /** Exposure is broad lighting; half resolution preserves it with 75% fewer pixels. */
 const EXPOSURE_ATLAS_SCALE = 0.5;
 /** Any meaningful source coverage becomes a solid distant texel. */
@@ -139,6 +143,8 @@ export interface ImpostorParameter {
 
 export interface ImpostorDefinition {
   directionalExposure?: boolean;
+  /** Captures each leaf's seasonal turning phase and a foliage mask alongside the colour atlas. */
+  seasonalFoliage?: boolean;
   /** Stable identifier used for Babylon resources and logs. */
   name: string;
   /** Defaults to `name`; useful when resource names and public parameters differ. */
@@ -399,13 +405,16 @@ async function captureDefinition(
     };
     const assets = await captureImpostorAtlases(scene, captureOptions);
     if (!retainAtlasCanvases) releaseAtlasCanvases(assets);
-    if (definition.directionalExposure) {
-      try {
-        assets.exposureTextures = await captureExposureAtlases(scene, captureOptions);
-      } catch (error) {
-        disposeImpostorAssets(assets);
-        throw error;
+    try {
+      if (definition.directionalExposure) {
+        assets.exposureTextures = await captureDataBandAtlases(scene, captureOptions, "exposure", [1, 2]);
       }
+      if (definition.seasonalFoliage) {
+        [assets.seasonPhaseTexture] = await captureDataBandAtlases(scene, captureOptions, "season-phase", [SEASON_PHASE_CAPTURE_BAND]);
+      }
+    } catch (error) {
+      disposeImpostorAssets(assets);
+      throw error;
     }
     console.log(`${definition.name}: capture complete; procedural source disposed`);
     return assets;
@@ -419,7 +428,12 @@ async function captureDefinition(
 }
 
 function disposeImpostorAssets(assets: ImpostorAssets): void {
-  const textures = new Set([...assets.textures, ...assets.lowResolutionTextures, ...(assets.exposureTextures ?? [])]);
+  const textures = new Set([
+    ...assets.textures,
+    ...assets.lowResolutionTextures,
+    ...(assets.exposureTextures ?? []),
+    ...(assets.seasonPhaseTexture ? [assets.seasonPhaseTexture] : []),
+  ]);
   textures.forEach((texture) => texture.dispose());
   releaseAtlasCanvases(assets);
 }
@@ -667,7 +681,18 @@ export async function captureImpostorAtlases(
   return createImpostorTextures(scene, name, canvases, metadata, cooperative);
 }
 
-async function captureExposureAtlases(scene: Scene, options: ImpostorCaptureOptions): Promise<Texture[]> {
+/**
+ * Renders the source with its material switched to a raw data band (see the
+ * capture material's `exposureCaptureBand`) and packs the five faces into one
+ * 3-by-2 RGBA atlas per band, at the reduced exposure resolution. Bands 1 and
+ * 2 hold directional exposure; band 3 holds the seasonal foliage phase.
+ */
+async function captureDataBandAtlases(
+  scene: Scene,
+  options: ImpostorCaptureOptions,
+  label: string,
+  bands: readonly number[],
+): Promise<Texture[]> {
   const resolutionWidth = Math.max(1, Math.round(
     (options.resolutionWidth ?? options.resolution) * EXPOSURE_ATLAS_SCALE,
   ));
@@ -677,16 +702,16 @@ async function captureExposureAtlases(scene: Scene, options: ImpostorCaptureOpti
   const width = options.gridWidth * resolutionWidth;
   const height = options.gridHeight * resolutionHeight;
   const maxSize = scene.getEngine().getCaps().maxTextureSize;
-  if (width * 3 > maxSize || height * 2 > maxSize) throw new Error("Directional exposure atlas exceeds GPU texture size.");
+  if (width * 3 > maxSize || height * 2 > maxSize) throw new Error(`Impostor ${label} atlas exceeds GPU texture size.`);
   const materials = new Set(options.meshes.map((mesh) => mesh.material).filter((material): material is ShaderMaterial => material instanceof ShaderMaterial));
   const textures: Texture[] = [];
   try {
-    for (let band = 1; band <= 2; band++) {
+    for (const band of bands) {
       const data = new Uint8Array(width * 3 * height * 2 * 4).fill(255);
       materials.forEach((material) => material.setFloat("exposureCaptureBand", band));
       await captureImpostorAtlases(scene, {
         ...options,
-        name: `${options.name}-exposure-${band}`,
+        name: `${options.name}-${label}-${band}`,
         resolution: resolutionHeight,
         resolutionWidth,
         resolutionHeight,
@@ -695,7 +720,7 @@ async function captureExposureAtlases(scene: Scene, options: ImpostorCaptureOpti
         },
       });
       const texture = new RawTexture(data, width * 3, height * 2, Constants.TEXTUREFORMAT_RGBA, scene, false, false, Texture.BILINEAR_SAMPLINGMODE);
-      texture.name = `${options.name}-exposure-${band}`;
+      texture.name = `${options.name}-${label}-${band}`;
       texture.gammaSpace = false;
       texture.wrapU = texture.wrapV = Texture.CLAMP_ADDRESSMODE;
       textures.push(texture);

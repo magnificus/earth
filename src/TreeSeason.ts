@@ -9,8 +9,50 @@ export interface TreeSeasonAppearance {
   season: TreeSeason;
   /** Fraction of deciduous leaf cards retained in the generated crown. */
   leafCoverage: number;
-  /** Multiplier baked into each retained foliage vertex color. */
+  /**
+   * Target foliage colour multiplier for this season. It is applied live by
+   * the tree materials, spreading through each crown region by region (see
+   * `treeSeasonProgressAt`), and is never baked into models or atlases.
+   */
   foliageTint: readonly [number, number, number];
+}
+
+/** Days after the season begins by which autumn colour has reached every tree. */
+const AUTUMN_TURN_DAYS = 60;
+/** Days over which spring's fresh flush settles into summer green. */
+const SPRING_SETTLE_DAYS = 75;
+
+/**
+ * How far the season's `foliageTint` has spread through the crowns: 0 leaves
+ * every tree in summer colour, 1 has turned every leaf. Autumn rises through
+ * the season and spring falls back as new leaves mature; winter's few remaining
+ * leaves are fully turned. Individual trees run ahead of or behind this value
+ * in the shader, so it describes the local forest as a whole.
+ */
+export function treeSeasonProgressAt(date: Date | undefined, latitude: number): number {
+  if (!date || !Number.isFinite(date.getTime()) || !Number.isFinite(latitude)) return 0;
+  const season = meteorologicalSeason(date.getMonth(), latitude < 0);
+  const days = daysIntoSeason(date);
+  switch (season) {
+    case "autumn":
+      return clamp01(days / AUTUMN_TURN_DAYS);
+    case "spring":
+      return 1 - clamp01(days / SPRING_SETTLE_DAYS);
+    case "winter":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/** Seasons change on the same month boundaries in both hemispheres. */
+function daysIntoSeason(date: Date): number {
+  const monthsIntoSeason = (date.getMonth() + 1) % 3;
+  return monthsIntoSeason * 30.4 + (date.getDate() - 1);
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
 }
 
 /**
@@ -43,9 +85,10 @@ const SUMMER: TreeSeasonAppearance = {
 };
 
 /**
- * Resolves the appearance baked into a tree model and its impostor atlas.
- * Seasons reverse across the equator; tropical trees and evergreen species
- * retain their crowns, while subtropical deciduous trees react more gently.
+ * Resolves the seasonal appearance of a tree: crown density baked into the
+ * model and atlas, plus the live colour target. Seasons reverse across the
+ * equator; tropical trees and evergreen species retain their crowns, while
+ * subtropical deciduous trees react more gently.
  */
 export function treeSeasonAt(
   date: Date | undefined,

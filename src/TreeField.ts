@@ -80,8 +80,16 @@ import {
   proceduralVariantAtLocation,
 } from "./procedural/ProceduralRegions";
 import { DEFAULT_WORLD_SEED, layerSeed } from "./WorldGrid";
-import { treeSeasonAt } from "./TreeSeason";
+import { treeSeasonAt, treeSeasonProgressAt } from "./TreeSeason";
 import { directionalExposureDeclaration } from "./DirectionalExposure";
+import {
+  initializeSeasonalFoliage,
+  seasonalFoliageFragmentDeclaration,
+  seasonalFoliageVertexDeclaration,
+  setSeasonalFoliage,
+  setSeasonalFoliageProgress,
+  SEASONAL_FOLIAGE_UNIFORMS,
+} from "./SeasonalFoliage";
 
 export type TreeFieldResult = VegetationFieldResult;
 export const DEFAULT_TREE_SPACING_METERS = 3.5;
@@ -178,6 +186,7 @@ ${vegetationShadowVertexDeclaration}
 ${cloudShadowVertexDeclaration}
 ${windPhaseVertexDeclaration}
 ${windShearVertexDeclaration}
+${seasonalFoliageVertexDeclaration}
 #include<instancesDeclaration>
 varying vec3 vLocalPosition;
 varying vec3 vViewDirection;
@@ -195,6 +204,8 @@ varying vec4 vGroundPlane;
 void main(void) {
   #include<instancesVertex>
   vec3 instanceOrigin = finalWorld[3].xyz;
+  vSeasonProgress = seasonInstanceProgress(instanceOrigin);
+  vSeasonTint = seasonInstanceTint(instanceOrigin);
   vec4 worldPosition = finalWorld * vec4(position, 1.0);
 #ifdef IMPOSTOR_GROUND_PLANE
   vGroundRayPoint = worldPosition.xyz;
@@ -319,9 +330,20 @@ uniform float fogEnd;
 ${vegetationShadowFragmentDeclaration}
 ${cloudShadowFragmentDeclaration}
 ${directionalExposureDeclaration}
+${seasonalFoliageFragmentDeclaration}
 #ifdef TREE_EXPOSURE
 uniform sampler2D exposureLowAtlas;
 uniform sampler2D exposureHighAtlas;
+#endif
+#ifdef SEASONAL_FOLIAGE
+uniform sampler2D seasonPhaseAtlas;
+#endif
+#if defined(TREE_EXPOSURE) || defined(SEASONAL_FOLIAGE)
+// Data atlases pack the five faces 3-by-2 at the same tile layout as colour.
+vec2 dataAtlasUV(float face, vec2 tile, vec2 imageUV) {
+  vec2 uv = (tile + mix(tileInset, vec2(1.0) - tileInset, imageUV)) / atlasTileCounts;
+  return (vec2(mod(face, 3.0), floor(face / 3.0)) + uv) / vec2(3.0, 2.0);
+}
 #endif
 
 vec4 atlasSample(float face, vec2 uv) {
@@ -634,6 +656,12 @@ void main(void) {
 #endif
 
   vec3 straightColor = color.rgb;
+  #ifdef SEASONAL_FOLIAGE
+  // The atlas holds summer colour; season, per-tree timing and per-leaf
+  // region phase combine here so trees sharing it still turn independently.
+  vec2 seasonData = texture2D(seasonPhaseAtlas, dataAtlasUV(face, selectedTile, imageUV)).rg;
+  straightColor = seasonFoliageColor(straightColor, seasonData.r, seasonData.g);
+  #endif
   float sceneBrightness = max(
     max(skyColor.r, max(skyColor.g, skyColor.b)),
     max(sunColor.r, max(sunColor.g, sunColor.b))
@@ -671,8 +699,7 @@ void main(void) {
   float shadowVisibility = vegetationShadowVisibility();
   float exposureScale = 1.0;
   #ifdef TREE_EXPOSURE
-  vec2 exposureUV = (selectedTile + mix(tileInset, vec2(1.0) - tileInset, imageUV)) / atlasTileCounts;
-  exposureUV = (vec2(mod(face, 3.0), floor(face / 3.0)) + exposureUV) / vec2(3.0, 2.0);
+  vec2 exposureUV = dataAtlasUV(face, selectedTile, imageUV);
   exposureScale = exposureSunlightScale(directionalExposure(
     texture2D(exposureLowAtlas, exposureUV), texture2D(exposureHighAtlas, exposureUV), normalize(vLocalSunDirection)
   ));
@@ -913,6 +940,10 @@ export async function createTreeField(
 
     variantBuckets = consolidateTreeVariantBuckets(variantBuckets);
     trace.stage(`resources (${matrices.length} trees, ${variantBuckets.size} variants)`);
+    // Colour is never baked into the shared models or atlases. Each material
+    // receives the season's tint and how far it has spread; instances then
+    // offset that timing individually in the shader.
+    const seasonProgress = treeSeasonProgressAt(seasonalDate, tileVariantLocation.lat);
 
     // Only species that placement actually encountered in this lon/lat tile get
     // model geometry and an impostor capture. This avoids global up-front atlases.
@@ -960,6 +991,10 @@ export async function createTreeField(
       prototype.root.onDisposeObservable.add(() => {
         modelMaterials.forEach((material) => material.dispose(true, false));
       });
+      const foliageTint = variant.season?.foliageTint ?? [1, 1, 1];
+      for (const material of [prototype.mesh.material, ...modelMaterials]) {
+        if (material instanceof ShaderMaterial) setSeasonalFoliage(material, foliageTint, seasonProgress);
+      }
       resources.push({ bucket, prototype, modelMeshes, fallenLogModel });
     }
 
@@ -1010,6 +1045,18 @@ export async function createTreeField(
   } finally {
     trace.finish();
   }
+}
+
+/**
+ * Moves a built field's seasonal colour on as the date advances. Only the
+ * progress uniform changes, so no geometry or atlas work is involved.
+ */
+export function setTreeFieldSeasonProgress(
+  field: TreeFieldResult,
+  date: Date | undefined,
+  latitude: number,
+): void {
+  setSeasonalFoliageProgress(field.meshes, treeSeasonProgressAt(date, latitude));
 }
 
 /**
@@ -1266,7 +1313,7 @@ export function createImpostorMaterial(
     { vertexSource: impostorVertexShader, fragmentSource: impostorFragmentShader },
     {
       attributes: ["position", "vegetationColor", "instanceLodBlend"],
-      uniforms: ["world", "viewProjection", "cameraPosition", "captureCenterY", "impostorDepthPull", "captureDimensions", "gridDimensions", "atlasTileCounts", "tileInset", "lowTileInset", "impostorLodNear", "impostorLodFar", "forceLowestLod", "cameraOrthographic", "rotationallySymmetric", "rotationalSymmetryOrder", "upperHemisphereOnly", "sunDirection", "sunColor", "skyColor", "groundColor", "lowLightAlbedoScale", "instanceColorCoverage", "fieldFade", "distanceFadeNear", "distanceFadeFar", "groundColorBlend", "distanceGroundBlend", "distanceGroundColor", "impostorAmbientUpward", "impostorColorContrast", "fogColor", "fogStart", "fogEnd", "vegetationShadowMatrix", "vegetationShadowAtInstanceRoot", "vegetationShadowTexelSize", "vegetationShadowDepthValues", "vegetationShadowEnabled", "vegetationShadowReverseDepth", "vegetationShadowDarkness", "vegetationShadowFloatTexture", ...CLOUD_SHADOW_UNIFORMS, ...WIND_PHASE_UNIFORMS, ...WIND_SHEAR_UNIFORMS],
+      uniforms: ["world", "viewProjection", "cameraPosition", "captureCenterY", "impostorDepthPull", "captureDimensions", "gridDimensions", "atlasTileCounts", "tileInset", "lowTileInset", "impostorLodNear", "impostorLodFar", "forceLowestLod", "cameraOrthographic", "rotationallySymmetric", "rotationalSymmetryOrder", "upperHemisphereOnly", "sunDirection", "sunColor", "skyColor", "groundColor", "lowLightAlbedoScale", "instanceColorCoverage", "fieldFade", "distanceFadeNear", "distanceFadeFar", "groundColorBlend", "distanceGroundBlend", "distanceGroundColor", "impostorAmbientUpward", "impostorColorContrast", "fogColor", "fogStart", "fogEnd", "vegetationShadowMatrix", "vegetationShadowAtInstanceRoot", "vegetationShadowTexelSize", "vegetationShadowDepthValues", "vegetationShadowEnabled", "vegetationShadowReverseDepth", "vegetationShadowDarkness", "vegetationShadowFloatTexture", ...CLOUD_SHADOW_UNIFORMS, ...WIND_PHASE_UNIFORMS, ...WIND_SHEAR_UNIFORMS, ...SEASONAL_FOLIAGE_UNIFORMS],
       samplers: ["atlas0", "atlas1", "atlas2", "atlas3", "atlas4", "lowAtlas0", "lowAtlas1", "lowAtlas2", "lowAtlas3", "lowAtlas4", "vegetationShadowSampler", "cloudShadowAtlas"],
       // Writing depth costs the early depth test, so the dense low vegetation
       // that never needed it compiles without the proxy at all.
@@ -1282,6 +1329,12 @@ export function createImpostorMaterial(
     material.options.samplers.push("exposureLowAtlas", "exposureHighAtlas");
     material.setTexture("exposureLowAtlas", assets.exposureTextures[0]);
     material.setTexture("exposureHighAtlas", assets.exposureTextures[1]);
+  }
+  initializeSeasonalFoliage(material);
+  if (assets.seasonPhaseTexture) {
+    material.options.defines.push("#define SEASONAL_FOLIAGE");
+    material.options.samplers.push("seasonPhaseAtlas");
+    material.setTexture("seasonPhaseAtlas", assets.seasonPhaseTexture);
   }
   // Preserve atlas alpha and the complementary model/impostor LOD mask in the
   // depth pass, avoiding a solid box shadow around each proxy.

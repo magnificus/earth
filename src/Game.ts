@@ -32,7 +32,7 @@ import {
   LAKE_TERRAIN_CONTEXT_METERS,
 } from "./TerrainLakePolygons";
 import type { TerrainLakePolygon } from "./TerrainLakePolygons";
-import { createTreeField } from "./TreeField";
+import { createTreeField, setTreeFieldSeasonProgress } from "./TreeField";
 import { createGrassField, setGrassFieldDetailDistance } from "./GrassField";
 import { createBushField } from "./BushField";
 import { createSaplingField } from "./SaplingField";
@@ -202,6 +202,8 @@ export class Game {
   private readonly initialTimeOfDay?: number;
   /** Date used by the current generation of seasonal scenery. */
   private vegetationDate?: Date;
+  /** Calendar day whose seasonal colour progress the tree materials last received. */
+  private seasonProgressDay?: number;
   private sceneryRevision = 0;
   private readonly fpsCounter: FpsCounter;
   private readonly vegetationModes: VegetationModes;
@@ -1858,6 +1860,18 @@ export class Game {
     const previousSeason = treeSeasonAt(this.vegetationDate, 45, "oak").season;
     const nextSeason = treeSeasonAt(date, 45, "oak").season;
     this.vegetationDate = date;
+    // Within a season, leaf colour keeps spreading through the crowns. That is
+    // a per-material uniform, so built tiles follow the calendar day by day.
+    const day = Math.floor(date.getTime() / 86_400_000);
+    if (day !== this.seasonProgressDay) {
+      this.seasonProgressDay = day;
+      for (const record of this.tiles.values()) {
+        const latitude = (record.terrainData.bounds.latNorth + record.terrainData.bounds.latSouth) / 2;
+        for (const field of [record.treeField, record.saplingField, record.farTreeField]) {
+          if (field) setTreeFieldSeasonProgress(field, date, latitude);
+        }
+      }
+    }
     if (previousSeason !== nextSeason) {
       for (const record of this.tiles.values()) {
         const latitude = (record.terrainData.bounds.latNorth + record.terrainData.bounds.latSouth) / 2;

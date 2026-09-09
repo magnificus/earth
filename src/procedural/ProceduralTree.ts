@@ -6,6 +6,7 @@ import {
 import { lerp } from "../MathUtils";
 import { createSeededRandom, hashString, unitFromSeed } from "../Random";
 import type { TreeSeasonAppearance } from "../TreeSeason";
+import { bakeFoliageSeasonPhase, forEachFoliageCard } from "../FoliageSeasonPhase";
 
 export const PROCEDURAL_TREE_SOURCE_HEIGHT = 3;
 export const PROCEDURAL_TREE_CAPTURE_DIAMETER = 3.2;
@@ -14,7 +15,10 @@ export interface ProceduralTreeOptions {
   seed?: number;
   name?: string;
   liveLighting?: boolean;
-  /** Seasonal state baked into foliage geometry and vertex colors. */
+  /**
+   * Seasonal crown density baked into the foliage geometry. The season's
+   * colour is applied live by the materials, never baked.
+   */
   season?: TreeSeasonAppearance;
 }
 
@@ -448,7 +452,7 @@ function createBirchTree(
 
   applyRegionalTreeCharacter(logBuffers, seed);
   applyRegionalTreeCharacter(branchBuffers, seed);
-  return createTreeParts(scene, name, "birch", logBuffers, branchBuffers, liveLighting, options.season);
+  return createTreeParts(scene, name, "birch", logBuffers, branchBuffers, liveLighting, options);
 }
 
 function emptyGeometryBuffers(): GeometryBuffers {
@@ -733,7 +737,7 @@ function createBroadleafTree(
 
   applyRegionalTreeCharacter(logBuffers, seed);
   applyRegionalTreeCharacter(branchBuffers, seed);
-  return createTreeParts(scene, name, species, logBuffers, branchBuffers, liveLighting, options.season);
+  return createTreeParts(scene, name, species, logBuffers, branchBuffers, liveLighting, options);
 }
 
 /** Builds a ringed, gently leaning trunk with a radial crown of feathered fronds. */
@@ -845,7 +849,7 @@ function createPalmTree(scene: Scene, options: ProceduralTreeOptions): Procedura
   }
   applyRegionalTreeCharacter(logBuffers, seed);
   applyRegionalTreeCharacter(branchBuffers, seed);
-  return createTreeParts(scene, name, "palm", logBuffers, branchBuffers, liveLighting, options.season);
+  return createTreeParts(scene, name, "palm", logBuffers, branchBuffers, liveLighting, options);
 }
 
 /**
@@ -1104,7 +1108,7 @@ function createKapokTree(scene: Scene, options: ProceduralTreeOptions): Procedur
 
   applyRegionalTreeCharacter(logBuffers, seed);
   applyRegionalTreeCharacter(branchBuffers, seed);
-  return createTreeParts(scene, name, "kapok", logBuffers, branchBuffers, liveLighting, options.season);
+  return createTreeParts(scene, name, "kapok", logBuffers, branchBuffers, liveLighting, options);
 }
 
 function createConiferTree(
@@ -1347,7 +1351,7 @@ function createConiferTree(
 
   applyRegionalTreeCharacter(logBuffers, seed);
   applyRegionalTreeCharacter(branchBuffers, seed);
-  return createTreeParts(scene, name, species, logBuffers, branchBuffers, liveLighting, options.season);
+  return createTreeParts(scene, name, species, logBuffers, branchBuffers, liveLighting, options);
 }
 
 /** Gives sister variants a different large-scale silhouette, not just different twigs. */
@@ -1399,9 +1403,12 @@ function createTreeParts(
   logBuffers: GeometryBuffers,
   branchBuffers: GeometryBuffers,
   liveLighting: boolean,
-  season?: TreeSeasonAppearance,
+  options: ProceduralTreeOptions,
 ): ProceduralTreeParts {
-  if (season) applySeasonalFoliage(branchBuffers, season);
+  // Every crown carries its leaf turning order so the live shaders can colour
+  // coherent regions of foliage in sequence, whatever the current season.
+  bakeFoliageSeasonPhase(branchBuffers, options.seed ?? 0);
+  if (options.season) applySeasonalFoliage(branchBuffers, options.season);
   const material = createTreeModelMaterial(scene, name, species, liveLighting);
   return {
     log: createTreePartMesh(scene, `${name}Log`, logBuffers, material),
@@ -1426,39 +1433,25 @@ export function createTreeModelMaterial(
   );
 }
 
-/** Removes whole leaf cards and recolors the survivors before model/impostor creation. */
+/**
+ * Removes whole leaf cards before model/impostor creation. Seasonal colour is
+ * deliberately not baked here: the shaders tint each leaf region live from the
+ * season's `foliageTint`, so trees sharing one atlas still turn independently.
+ */
 function applySeasonalFoliage(
   buffers: GeometryBuffers,
   season: TreeSeasonAppearance,
 ): void {
-  if (season.leafCoverage >= 1 && season.foliageTint.every((value) => value === 1)) return;
+  if (season.leafCoverage >= 1) return;
 
   const droppedVertices = new Set<number>();
-  for (let vertex = 0; vertex + 3 < buffers.positions.length / 3;) {
-    let foliageCard = true;
-    for (let corner = 0; corner < 4; corner++) {
-      const u = buffers.uvs[(vertex + corner) * 2];
-      const v = buffers.uvs[(vertex + corner) * 2 + 1];
-      foliageCard &&= u >= 0 && u <= 1 && v >= 0 && v <= 1;
-    }
-    if (!foliageCard) {
-      vertex++;
-      continue;
-    }
-
+  forEachFoliageCard(buffers, (vertex) => {
     // Geometry order is deterministic, so this keeps the same scattered leaves
     // in models and captures without consuming or perturbing the tree RNG.
     const retained = unitFromSeed(vertex ^ hashString(season.key)) < season.leafCoverage;
-    for (let corner = 0; corner < 4; corner++) {
-      const index = vertex + corner;
-      if (!retained) droppedVertices.add(index);
-      const color = index * 4;
-      buffers.colors[color] = Math.min(1, buffers.colors[color] * season.foliageTint[0]);
-      buffers.colors[color + 1] = Math.min(1, buffers.colors[color + 1] * season.foliageTint[1]);
-      buffers.colors[color + 2] = Math.min(1, buffers.colors[color + 2] * season.foliageTint[2]);
-    }
-    vertex += 4;
-  }
+    if (retained) return;
+    for (let corner = 0; corner < 4; corner++) droppedVertices.add(vertex + corner);
+  });
   if (droppedVertices.size > 0) {
     buffers.indices = buffers.indices.filter((index) => !droppedVertices.has(index));
   }

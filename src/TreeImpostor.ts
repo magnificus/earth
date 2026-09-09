@@ -38,6 +38,7 @@ function createTreeProvider(species: TreeSpecies) {
   return createImpostorAssetProvider({
     name: `${species}TreeImpostor`,
     directionalExposure: true,
+    seasonalFoliage: true,
     queryPrefix: species === "birch" ? "tree-impostor" : `${species}-tree-impostor`,
     createSource: (scene, variant) => {
       const treeVariant = variant as TreeImpostorVariant;

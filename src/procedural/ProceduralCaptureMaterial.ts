@@ -32,6 +32,12 @@ import {
   WIND_PHASE_UNIFORMS,
   WIND_SHEAR_UNIFORMS,
 } from "../Wind";
+import {
+  initializeSeasonalFoliage,
+  seasonalFoliageFragmentDeclaration,
+  seasonalFoliageVertexDeclaration,
+  SEASONAL_FOLIAGE_UNIFORMS,
+} from "../SeasonalFoliage";
 
 const BARK_TEXTURE_SIZE = 512;
 
@@ -408,6 +414,7 @@ export function createVertexColorCaptureMaterial(
         ${cloudShadowVertexDeclaration}
         ${windPhaseVertexDeclaration}
         ${windShearVertexDeclaration}
+        ${seasonalFoliageVertexDeclaration}
         #include<instancesDeclaration>
         varying vec4 vColor;
         varying vec2 vUv;
@@ -441,6 +448,8 @@ export function createVertexColorCaptureMaterial(
           vInstanceLodBlend = 1.0;
           #endif
           vec3 instanceOrigin = finalWorld[3].xyz;
+          vSeasonProgress = seasonInstanceProgress(instanceOrigin);
+          vSeasonTint = seasonInstanceTint(instanceOrigin);
           vec3 windPosition = position + windShearOffset(
             position,
             0.0,
@@ -491,6 +500,7 @@ export function createVertexColorCaptureMaterial(
         ${directionalExposureDeclaration}
         ${vegetationShadowFragmentDeclaration}
         ${cloudShadowFragmentDeclaration}
+        ${seasonalFoliageFragmentDeclaration}
         float bayer4(vec2 pixel) {
           vec2 p = mod(floor(pixel), 4.0);
           vec2 low = mod(p, 2.0);
@@ -558,6 +568,13 @@ export function createVertexColorCaptureMaterial(
           // view. Give foliage a stable canopy normal; retain shaped normals
           // for bark and cut branch ends.
           float foliageMask = step(0.0, vUv.x) * (1.0 - step(1.5, vUv.x));
+          // Seasonal data band: each leaf's baked turning phase (vertex colour
+          // alpha) and the foliage mask that keeps bark untinted in impostors.
+          if (exposureCaptureBand > 2.5) {
+            gl_FragColor = vec4(vColor.a, foliageMask, 0.0, 1.0);
+            return;
+          }
+          surfaceColor = seasonFoliageColor(surfaceColor, vColor.a, foliageMask);
           float exposureScale = 1.0;
           #ifdef TREE_EXPOSURE
           if (exposureCaptureBand > 0.5) {
@@ -643,6 +660,7 @@ export function createVertexColorCaptureMaterial(
         ...CLOUD_SHADOW_UNIFORMS,
         ...WIND_PHASE_UNIFORMS,
         ...WIND_SHEAR_UNIFORMS,
+        ...SEASONAL_FOLIAGE_UNIFORMS,
       ],
       samplers: ["leafTexture", "barkTexture", "vegetationShadowSampler", "cloudShadowAtlas"],
       needAlphaBlending: false,
@@ -665,6 +683,7 @@ export function createVertexColorCaptureMaterial(
   material.setTexture("barkTexture", fallbackTexture);
   material.setFloat("lightingEnabled", liveLighting ? 1 : 0);
   material.setFloat("exposureCaptureBand", 0);
+  initializeSeasonalFoliage(material);
   registerExposureCutout(material, leafTextureUrl);
   material.setFloat("modelHeight", 1);
   material.setFloat("leafTextureEnabled", 0);

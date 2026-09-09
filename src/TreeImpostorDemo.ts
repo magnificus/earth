@@ -12,6 +12,8 @@ import {
   Vector3,
 } from "@babylonjs/core";
 import { FpsCounter } from "./FpsCounter";
+import { treeSeasonAt, type TreeSeasonAppearance } from "./TreeSeason";
+import { setSeasonalFoliage } from "./SeasonalFoliage";
 import {
   captureImpostorAtlases,
   CubeFace,
@@ -134,10 +136,22 @@ export class TreeImpostorDemo {
     this.setStatus("Generating source tree...");
     await measureFoliageTextures();
     // `?tree-impostor=<species>` previews any species; a bare flag keeps birch.
-    const requested = new URLSearchParams(window.location.search).get("tree-impostor") ?? "";
+    const query = new URLSearchParams(window.location.search);
+    const requested = query.get("tree-impostor") ?? "";
     const species: TreeSpecies = requested in TREE_SPECIES ? requested as TreeSpecies : "birch";
     const definition = TREE_SPECIES[species];
-    const source = definition.create(this.scene, { name: "treeCaptureSource" });
+    // `&season=autumn&season-progress=0.5` shows the live seasonal tint
+    // spreading through the source crown as a temperate forest would see it.
+    const season = previewSeason(query.get("season"), species);
+    const source = definition.create(this.scene, { name: "treeCaptureSource", season });
+    if (season) {
+      const progress = Number(query.get("season-progress") ?? 0.5);
+      for (const mesh of [source.log, source.branches]) {
+        if (mesh.material instanceof ShaderMaterial) {
+          setSeasonalFoliage(mesh.material, season.foliageTint, Number.isFinite(progress) ? progress : 0.5);
+        }
+      }
+    }
     const sourceRoot = new TransformNode("treeCaptureSourceRoot", this.scene);
     source.log.parent = sourceRoot;
     source.branches.parent = sourceRoot;
@@ -393,4 +407,19 @@ function downloadBlob(blob: Blob, filename: string): void {
   link.download = filename;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Maps a `?season=` name to the appearance a mid-latitude forest would have then. */
+function previewSeason(
+  name: string | null,
+  species: TreeSpecies,
+): TreeSeasonAppearance | undefined {
+  const representativeDate: Record<string, Date> = {
+    spring: new Date(2026, 3, 1),
+    summer: new Date(2026, 6, 1),
+    autumn: new Date(2026, 9, 1),
+    winter: new Date(2026, 0, 15),
+  };
+  const date = name ? representativeDate[name] : undefined;
+  return date ? treeSeasonAt(date, 50, species) : undefined;
 }

@@ -17,7 +17,7 @@ test("raw exposure captures skip atlas canvases and release runtime canvases ear
   );
   assert.ok(
     capture.indexOf("releaseAtlasCanvases(assets)") <
-      capture.indexOf("captureExposureAtlases(scene, captureOptions)"),
+      capture.indexOf('captureDataBandAtlases(scene, captureOptions, "exposure"'),
   );
 });
 
