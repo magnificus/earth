@@ -19,6 +19,7 @@
     "layouts:captured": "node --import ./tests/register-typescript.mjs scripts/render-captured-building-layouts.mjs",
     "benchmark:buildings": "node --import ./tests/register-typescript.mjs scripts/benchmark-building-loading.mjs",
     "site-plan:example": "node --import ./tests/register-typescript.mjs scripts/render-road-building-plan-example.mjs",
+    "tiles:debug": "node --import ./tests/register-typescript.mjs scripts/render-tile-generation.mjs",
     "test": "node --import ./tests/register-typescript.mjs --test --test-concurrency=4 tests/*.test.mjs",
     "typecheck": "tsc --noEmit --noUnusedLocals --noUnusedParameters",
     "clean": "rimraf dist"

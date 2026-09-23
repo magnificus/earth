@@ -133,6 +133,8 @@ const compositeBuildingSourceCache: BuildingSourceCacheNode = { children: new We
 const roadSourceCache = new WeakMap<VectorTile, readonly RoadSource[]>();
 
 interface MapLayerOptions {
+  onBuildingPlan?: (plan: ReturnType<typeof planBuilding>) => void;
+  onBuildingsCreated?: (meshes: Mesh[]) => void;
   buildingPlanningWorker?: Pick<BuildingPlanningWorker, "plan">;
   isCancelled?: () => boolean;
   meshWidth: number;
@@ -189,6 +191,15 @@ export interface RoadFeatureLayer {
 }
 
 export class OpenStreetMap {
+  /** Provider features are decoded only when an explicit debug capture requests them. */
+  static captureTileSources(tiles: readonly MapTile[]): unknown[] {
+    return tiles.map(tile => ({ x: tile.x, y: tile.y, zoom: tile.zoom,
+      layers: Object.fromEntries(Object.entries(tile.data?.layers ?? {}).map(([name, layer]) =>
+        [name, Array.from({ length: layer.length }, (_, index) =>
+          layer.feature(index).toGeoJSON(tile.x, tile.y, tile.zoom))])),
+    }));
+  }
+
   static collectWaterwaySegments(
     tiles: MapTile[],
     terrain: TerrainData,
@@ -294,6 +305,7 @@ export class OpenStreetMap {
         root.dispose();
         throw error;
       });
+      options.onBuildingsCreated?.(buildings.meshes);
       trace.stage("roads/waterways including frame yields");
       for (const tile of tiles) {
         await yieldControl?.();
@@ -448,7 +460,7 @@ export class OpenStreetMap {
     options: Pick<
       MapLayerOptions,
       "meshWidth" | "meshDepth" | "metersPerUnit" | "sharedBuildingElevations"
-    >,
+    > & { onBuildingPadsComplete?: () => void },
     yieldControl?: () => Promise<void>,
     trace?: StreamingTrace,
   ): Promise<number> {
@@ -753,6 +765,7 @@ async function createBuildingBatches(
         await yieldBuilding();
         trace.stage(`building=${source.id} plan/geometry/merge (inclusive)`);
         const plan = BuildingTrace.run(`building=${source.id} semantic plan`, () => planBuilding(source));
+        options.onBuildingPlan?.(plan);
         const mesh = detail === "far"
           ? ProceduralBuildingRenderer.createFar(scene, plan, terrain, renderOptions)
           : options.buildingPlanningWorker

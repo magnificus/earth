@@ -26,6 +26,7 @@ export interface PlannedFeatureTerrainOptions {
   metersPerUnit: number;
   /** Stable pad height shared by every tile touched by one building. */
   sharedBuildingElevations?: SharedValueMap<string, number>;
+  onBuildingPadsComplete?: () => void;
 }
 
 interface RoadGrade {
@@ -51,7 +52,10 @@ export async function conformTerrainToPlannedFeatures(
   yieldControl?: () => Promise<void>,
   trace?: StreamingTrace,
 ): Promise<number> {
-  if (plan.roads.length === 0 && plan.buildingSites.length === 0) return 0;
+  if (plan.roads.length === 0 && plan.buildingSites.length === 0) {
+    options.onBuildingPadsComplete?.();
+    return 0;
+  }
   trace?.stage("road grade sampling and terrain copy", "synchronous");
   const original = terrain.elevations.slice();
   const sampleSpacing = Math.max(
@@ -125,6 +129,7 @@ export async function conformTerrainToPlannedFeatures(
     touched[index] = 1;
     modified++;
   }, yieldControl);
+  options.onBuildingPadsComplete?.();
   trace?.stage("road grade raster shaping");
   await visitTerrainRaster(terrain, options, (index, x, z) => {
     const sample = { x, z };

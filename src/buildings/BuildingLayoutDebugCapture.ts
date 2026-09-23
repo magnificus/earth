@@ -25,6 +25,10 @@ interface BuildingLayoutCaptureFile {
 }
 
 const captures = new Map<string, EncounteredBuildingLayoutCapture>();
+
+export function encounteredBuildingLayouts(ids: readonly string[]): EncounteredBuildingLayoutCapture[] {
+  return ids.flatMap(id => { const capture = captures.get(id); return capture ? [capture] : []; });
+}
 const activeReferences = new Map<string, number>();
 interface CaptureOwner {
   onDisposeObservable: { add(callback: () => void): unknown };

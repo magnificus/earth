@@ -36,6 +36,10 @@ capturing when the detailed instrumentation is not already enabled.
 
 ## Building Layout Capture
 
+Per-tile stage images and complete numerical/geometry snapshots are available
+with `?tile-debug`. See [Per-tile generation](tile-generation.md) for stage order,
+offline reports, exports, and capture limits.
+
 Press `Shift+B` to download the building polygons from the detailed tile that is
 currently loaded in the scene. No startup option is required. The JSON includes
 source and metre-space polygons, facade openings, planner results, apartment

@@ -1,4 +1,8 @@
 import { monitorRenderHealth } from "../diagnostics/RenderHealth";
+import { TileGeneration } from "../world/TileGeneration";
+import { captureTileMeshes, installTileGenerationDebug } from "../diagnostics/TileGenerationCapture";
+import { encounteredBuildingLayouts } from "../buildings/BuildingLayoutDebugCapture";
+import type { BuildingPlan } from "../buildings/BuildingPlanner";
 import {
   AbstractEngine,
   BaseTexture,
@@ -223,6 +227,7 @@ export class Game {
   private readonly lakeElevations = new OwnedValueCache<string, number>();
   /** `?lake-debug` logs where rendered ground fails to carry a mapped lake outline. */
   private readonly lakeDebug: boolean;
+  private readonly captureTileGeneration: ReturnType<typeof installTileGenerationDebug>;
   private readonly buildingElevations = new OwnedValueCache<string, number>();
   private readonly layerFades: LayerFades;
   private streamingGeneration = 0;
@@ -285,6 +290,7 @@ export class Game {
     this.engine = engine;
     const query = new URLSearchParams(window.location.search);
     this.lakeDebug = query.has("lake-debug");
+    this.captureTileGeneration = installTileGenerationDebug(query);
     const forceReverseDepth = ["1", "on", "true", "force"].includes(
       query.get("reverse-depth")?.toLowerCase() ?? "",
     );
@@ -526,8 +532,8 @@ export class Game {
     this.activeTileBuilds.set(key, generation);
     if (wantDetail) this.activeDetailBuilds.add(key);
     const trace = new StreamingTrace(`tile=${key} detail=${wantDetail}`);
+    let record = this.tiles.get(key);
     try {
-      let record = this.tiles.get(key);
       if (!record || (wantDetail && !record.nativeTerrain) ||
           (!wantDetail && record.nativeTerrain && !record.detailed)) {
         trace.stage("terrain");
@@ -551,6 +557,7 @@ export class Game {
           trace.stage("detail (vegetation, LOD preparation, map features)");
           await this.buildTileDetail(record, generation, onProgress, trace);
         } catch (error: unknown) {
+          record.generationStages.abort(error);
           // Detail is assembled in stages. Keep anything that did finish
           // visible when one optional feature compiler fails, instead of
           // leaving a successfully loaded destination as bare terrain.
@@ -564,12 +571,35 @@ export class Game {
         // queued ahead of a demotion (the stand-ins commit hidden there).
         trace.stage("far trees (including exclusion mask)");
         if (!record.farTreeField) await this.buildFarTrees(record, generation);
+        else {
+          const field = record.farTreeField;
+          record.generationStages.begin("vegetation");
+          record.generationStages.finish("vegetation", () => ({ terrain: record!.terrainData,
+            frame: { meshWidth: record!.meshWidth, meshDepth: record!.meshDepth, metersPerUnit: this.terrainMetersPerUnit! },
+            placements: [{ kind: "farTrees", count: field.count, matrices: field.instanceMatrices }],
+          }), "Retained far trees from an earlier tile revision");
+        }
         trace.stage("far buildings");
         if (!record.farBuildings) await this.buildFarBuildings(record, generation);
+        else this.captureRetainedFarLayer(record, "farBuildings");
         trace.stage("far roads");
         if (!record.farRoads) await this.buildFarRoads(record, generation);
+        else this.captureRetainedFarLayer(record, "farRoads");
+        if (generation !== this.streamingGeneration) return;
+        if (!record.nativeTerrain) {
+          record.generationStages.begin("props");
+          record.generationStages.finish("props", () => ({
+            terrain: record!.terrainData,
+            frame: { meshWidth: record!.meshWidth, meshDepth: record!.meshDepth, metersPerUnit: this.terrainMetersPerUnit! },
+            plan: record!.roadAndBuildingPlan,
+          }), "Far tiles defer lamps and plot boundaries");
+        }
       }
+    } catch (error) {
+      record?.generationStages.abort(error);
+      throw error;
     } finally {
+      record?.generationStages.abort("Tile build ended before this stage completed", generation !== this.streamingGeneration);
       trace.finish();
       if (this.activeTileBuilds.get(key) === generation) {
         this.activeTileBuilds.delete(key);
@@ -588,6 +618,9 @@ export class Game {
     const key = worldTileKey(id);
     const sharedElevationOwner = {};
     let retainSharedElevations = false;
+    const capture = this.captureTileGeneration(key, native, this.worldSeed);
+    const stages = new TileGeneration(capture?.record);
+    stages.begin("sources");
     try {
     const previous = this.tiles.get(key);
     const area = worldTileArea(id, this.worldSeed);
@@ -626,32 +659,6 @@ export class Game {
     const [lakeTiles, contextTiles] = await Promise.all([mapTiles, lakeContextTiles]);
     if (generation !== this.streamingGeneration) return undefined;
     const surfaceLandCover = OpenStreetMap.createLandCoverSampler(contextTiles, landCover);
-    trace?.stage("procedural relief");
-    await applyTerrainDetail(
-      terrainData,
-      {
-        meshVertexSpacingMeters: Math.max(
-          terrainData.groundWidthMeters,
-          terrainData.groundHeightMeters,
-        ) / subdivisions,
-        landCover: surfaceLandCover,
-        worldSeed: this.worldSeed,
-      },
-      yieldControl,
-    );
-    if (generation !== this.streamingGeneration) return undefined;
-    trace?.stage("land cover terrain shaping");
-    const preCarvingElevations = terrainData.elevations.slice();
-    if (landCover) {
-      await landCover.constrainElevations(
-        terrainData,
-        undefined,
-        undefined,
-        yieldControl,
-      );
-    } else {
-      sinkSubmergedTerrain(terrainData);
-    }
     // The first tile of a world anchors the stable coordinate frame; every
     // later tile is projected into it so offsets stay exact while streaming.
     if (!this.terrainCoordinateFrame || !this.terrainMetersPerUnit) {
@@ -704,7 +711,7 @@ export class Game {
     // The overlap verdict is decided once per water polygon from the wider
     // context input below; the surface input only supplies tile-clipped rings.
     const surfaceLakeInput = OpenStreetMap.prepareLakeCollection(
-      lakeTiles,
+      contextTiles,
       terrainData,
       { meshWidth, meshDepth, withoutObstacles: true },
     );
@@ -718,6 +725,34 @@ export class Game {
         clipPadding: LAKE_TERRAIN_CONTEXT_METERS / metersPerUnit,
       },
     );
+    const waterwaySegments = OpenStreetMap.collectWaterwaySegments(contextTiles, terrainData, {
+      meshWidth, meshDepth, metersPerUnit,
+    });
+    const stageFrame = { meshWidth, meshDepth, metersPerUnit };
+    const waterSources = surfaceLakeInput.candidates.map(candidate => candidate.clipped);
+    stages.finish("sources", () => ({ terrain: terrainData, frame: stageFrame,
+      lakes: waterSources, rivers: waterwaySegments, sourceTerrain,
+      providerTiles: OpenStreetMap.captureTileSources(contextTiles),
+      lakeInput: contextLakeInput, surfaceLakeInput,
+      landCover: landCover ?? null, subdivisions,
+    }));
+    stages.begin("relief");
+    trace?.stage("procedural relief");
+    await applyTerrainDetail(terrainData, {
+      meshVertexSpacingMeters: Math.max(terrainData.groundWidthMeters, terrainData.groundHeightMeters) / subdivisions,
+      landCover: surfaceLandCover, worldSeed: this.worldSeed,
+    }, yieldControl);
+    if (generation !== this.streamingGeneration) return undefined;
+    stages.finish("relief", () => ({ terrain: terrainData, frame: stageFrame, lakes: waterSources, rivers: waterwaySegments }));
+    stages.begin("coastline");
+    trace?.stage("land cover terrain shaping");
+    const preCarvingElevations = terrainData.elevations.slice();
+    if (landCover) await landCover.constrainElevations(terrainData, undefined, undefined, yieldControl);
+    else sinkSubmergedTerrain(terrainData);
+    if (generation !== this.streamingGeneration) return undefined;
+    stages.finish("coastline", () => ({ terrain: terrainData, frame: stageFrame, lakes: waterSources,
+      rivers: waterwaySegments, preCarvingElevations, landCoverAvailable: !!landCover }));
+    stages.begin("water-selection");
     trace?.stage("lake collection worker wait");
     let surfaceLakeSources: TerrainLakeSource[];
     let lakeSources: TerrainLakeSource[];
@@ -735,6 +770,13 @@ export class Game {
       throw error;
     }
     if (generation !== this.streamingGeneration) return undefined;
+    stages.finish("water-selection", () => ({ terrain: terrainData, frame: stageFrame,
+      lakes: surfaceLakeSources, rivers: waterwaySegments, contextLakes: lakeSources,
+      decisions: surfaceLakeInput.candidates.map(({ water }) => ({ sourceId: water.sourceId,
+        accepted: surfaceLakeSources.some(lake => lake.sourceId === water.sourceId),
+        policy: "Reject >=15% building or >=10% surface-road overlap; cached by source ID" })),
+    }));
+    stages.begin("lake-terrain");
     trace?.stage("lake terrain shaping");
     const lakePolygons: TerrainLakePolygon[] = await conformTerrainToLakePolygons(
       terrainData,
@@ -755,14 +797,17 @@ export class Game {
       yieldControl,
       trace,
     );
+    stages.finish("lake-terrain", () => ({ terrain: terrainData, frame: stageFrame,
+      lakes: lakePolygons, rivers: waterwaySegments, contextLakes: lakeSources,
+      support: measureLakeSupport(terrainData, lakePolygons, stageFrame) }));
+    stages.begin("river-terrain");
     trace?.stage("river terrain shaping");
-    const waterwaySegments = OpenStreetMap.collectWaterwaySegments(contextTiles, terrainData, {
-      meshWidth, meshDepth, metersPerUnit,
-    });
     await carveTerrainWaterways(terrainData, waterwaySegments,
       { meshWidth, meshDepth, metersPerUnit }, yieldControl);
     trace?.stage("lake support diagnostics", "synchronous");
     if (generation !== this.streamingGeneration) return undefined;
+    stages.finish("river-terrain", () => ({ terrain: terrainData, frame: stageFrame,
+      lakes: lakePolygons, rivers: waterwaySegments }));
     const lakeSupportOptions = { meshWidth, meshDepth, metersPerUnit };
     this.reportLakeSupport("lakes", key, native, terrainData, lakePolygons, lakeSupportOptions);
     if (native) {
@@ -771,6 +816,7 @@ export class Game {
     }
     if (generation !== this.streamingGeneration) return undefined;
     trace?.stage("road/building planning and terrain shaping");
+    stages.begin("site-plan");
     trace?.stage("building composition worker wait");
     try {
       await OpenStreetMap.prepareBuildingComposition(lakeTiles,
@@ -798,6 +844,12 @@ export class Game {
     }
     if (generation !== this.streamingGeneration) return undefined;
     trace?.stage("planned terrain shaping");
+    stages.finish("site-plan", () => ({ terrain: terrainData, frame: stageFrame,
+      lakes: lakePolygons, rivers: waterwaySegments, plan: roadAndBuildingPlan, input: planningInput }));
+    const captureEarthworks = () => ({ terrain: terrainData, frame: stageFrame,
+      lakes: lakePolygons, rivers: waterwaySegments, plan: roadAndBuildingPlan,
+      support: measureLakeSupport(terrainData, lakePolygons, stageFrame) });
+    stages.begin("building-pads");
     if (native) {
       await OpenStreetMap.conformTerrainToPlan(
         roadAndBuildingPlan,
@@ -807,6 +859,10 @@ export class Game {
           meshDepth,
           metersPerUnit,
           sharedBuildingElevations: this.buildingElevations.forOwner(sharedElevationOwner),
+          onBuildingPadsComplete: () => {
+            stages.finish("building-pads", captureEarthworks);
+            stages.begin("road-grades");
+          },
         },
         yieldControl,
         trace,
@@ -815,18 +871,28 @@ export class Game {
       if (generation !== this.streamingGeneration) return undefined;
       this.reportLakeSupport("plan", key, native, terrainData, lakePolygons, lakeSupportOptions);
     }
+    if (!native) {
+      stages.finish("building-pads", captureEarthworks, "Far terrain omits building pads");
+      stages.begin("road-grades");
+    }
+    stages.finish("road-grades", captureEarthworks, native ? undefined : "Far terrain omits road earthworks");
 
     // Cache only finalized terrain. Newly attached tiles now adopt lake,
     // building, and road deformation from an already-visible neighbor instead
     // of restoring the pre-lake WorldCover edge that caused tile chasms.
     trace?.stage("terrain edge stitching", "synchronous");
+    stages.begin("stitching");
     stitchTerrainEdges(
       terrainData,
       this.terrainEdgeElevations.forOwner(sharedElevationOwner),
     );
     trace?.stage("stitched terrain lake support diagnostics", "synchronous");
     this.reportLakeSupport("stitch", key, native, terrainData, lakePolygons, lakeSupportOptions);
+    stages.finish("stitching", () => ({ terrain: terrainData, frame: stageFrame,
+      lakes: lakePolygons, rivers: waterwaySegments, plan: roadAndBuildingPlan,
+      support: measureLakeSupport(terrainData, lakePolygons, stageFrame) }));
 
+    stages.begin("terrain-mesh");
     trace?.stage("terrain mesh progress wait");
     await reportInitializationProgress(onProgress, "Building terrain mesh", 40);
     trace?.stage("terrain mesh and textures");
@@ -847,7 +913,10 @@ export class Game {
     setFrozenMeshOffset(terrain, offset.x, offset.z);
     enableTerrainCollisions(terrain);
     terrain.setEnabled(false);
+    stages.finish("terrain-mesh", () => ({ terrain: terrainData, frame: stageFrame,
+      meshes: captureTileMeshes([terrain]), offset, subdivisions }));
 
+    stages.begin("water-mesh");
     trace?.stage("lake surfaces and terrain commit");
     // Shorelines are sampled from this mesh's triangles. Rebuild them on
     // promotion so they follow native terrain instead of the old coarse bed.
@@ -875,6 +944,10 @@ export class Game {
     for (const mesh of lakeSurfaces.meshes) mesh.freezeWorldMatrix();
     terrain.setEnabled(true);
     lakeSurfaces.root.setEnabled(true);
+    stages.finish("water-mesh", () => ({ terrain: terrainData, frame: stageFrame,
+      lakes: lakePolygons, rivers: waterwaySegments, meshes: captureTileMeshes(lakeSurfaces.meshes),
+      offset,
+      ocean: { elevationMeters: 0, ownership: "Shared camera-centered plane, not tile-owned" } }));
 
     // Upgrading a streamed tile from the coarse terrain tier to native detail
     // replaces its record. Keep the already-visible distant tree stand-in
@@ -902,6 +975,8 @@ export class Game {
       mapTiles,
       lakeContextTiles,
       roadAndBuildingPlan,
+      generationStages: stages,
+      captureGeneration: !!capture,
       terrain,
       meshWidth,
       meshDepth,
@@ -940,7 +1015,11 @@ export class Game {
     if (previous) disposeStreamedTile(previous);
     this.playerControls?.ensureAboveGround();
     return record;
+    } catch (error) {
+      stages.abort(error);
+      throw error;
     } finally {
+      if (!retainSharedElevations) stages.abort("Tile generation superseded", true);
       if (!retainSharedElevations) {
         this.terrainEdgeElevations.release(sharedElevationOwner);
         this.lakeElevations.release(sharedElevationOwner);
@@ -994,6 +1073,9 @@ export class Game {
     if (!metersPerUnit) return;
     const yieldControl = onProgress ? undefined : this.streamingYielder;
     const startDisabled = !onProgress;
+    const stages = record.generationStages;
+    const buildingPlans: BuildingPlan[] = [];
+    const stageFrame = { meshWidth: record.meshWidth, meshDepth: record.meshDepth, metersPerUnit };
     await reportInitializationProgress(onProgress, "Loading map features", 50);
     trace?.stage("detail map data and exclusion masks");
     const mapWays = await this.loadMapTiles(record);
@@ -1015,6 +1097,13 @@ export class Game {
       snowCover: this.tileSnowCover(terrainData),
       startDisabled,
       planning: record.roadAndBuildingPlan,
+      onBuildingPlan: record.captureGeneration ? (plan: BuildingPlan) => buildingPlans.push(plan) : undefined,
+      onBuildingsCreated: (meshes: Mesh[]) => stages.finish("buildings", () => ({
+        terrain: terrainData, frame: stageFrame, plans: buildingPlans,
+        layouts: encounteredBuildingLayouts(buildingPlans.map(plan => plan.id)),
+        plan: record.roadAndBuildingPlan, meshes: captureTileMeshes(meshes),
+        interiors: "Layouts captured; interior geometry and furniture stream on demand",
+      })),
       sharedBuildingElevations: this.buildingElevations.forOwner(
         record.sharedElevationOwner,
       ),
@@ -1025,6 +1114,7 @@ export class Game {
       ),
     };
     let mappedExclusionMask;
+    let exclusionMaskFallback = false;
     try {
       mappedExclusionMask = await OpenStreetMap.createVegetationExclusionMask(
         mapWays,
@@ -1036,6 +1126,7 @@ export class Game {
       // The exclusion mask is only a placement aid. Keep the natural layers
       // renderable when an individual provider feature is malformed.
       console.warn("Could not build the map exclusion mask; continuing without it.", error);
+      exclusionMaskFallback = true;
       mappedExclusionMask = { intersects: () => false };
     }
     if (generation !== this.streamingGeneration) return;
@@ -1135,6 +1226,7 @@ export class Game {
         }) },
     ];
     const buildVegetation = async () => {
+      stages.begin("vegetation");
       for (const { kind, label, progress, create } of fields) {
         await reportInitializationProgress(onProgress, label, progress);
         trace?.stage(kind + " and initial LOD");
@@ -1157,14 +1249,34 @@ export class Game {
       setTransformNodeOffset(rockField.root, record.offsetX, record.offsetZ);
       record.rockField = rockField;
       await this.activateTileVegetation(record, generation);
+      stages.finish("vegetation", () => ({ terrain: terrainData, frame: stageFrame,
+        plan: record.roadAndBuildingPlan,
+        placements: VEGETATION_FIELD_KINDS.flatMap(kind => {
+          const field = record[kind];
+          return field ? [{ kind, count: field.count, matrices: field.instanceMatrices }] : [];
+        }),
+        meshes: captureTileMeshes(rockField.meshes),
+        offset: { x: record.offsetX, z: record.offsetZ },
+        actorMix, snowCover: fieldOptions.snowCover, seasonalDate: this.vegetationDate,
+        exclusionMaskFallback,
+      }));
       return rockField;
     };
 
     // Both phases stage disabled resources and use the same cooperative budget.
     // Settle both before cleanup so a failed phase cannot leak a later result.
+    stages.begin("buildings");
+    stages.begin("roads-rivers");
     const [vegetationResult, mapResult] = await Promise.allSettled([
       buildVegetation(),
-      OpenStreetMap.createLayer(this.scene, mapWays, terrainData, mapOptions, yieldControl),
+      OpenStreetMap.createLayer(this.scene, mapWays, terrainData, mapOptions, yieldControl).then(layer => {
+        stages.finish("roads-rivers", () => ({ terrain: terrainData, frame: stageFrame,
+          plan: record.roadAndBuildingPlan,
+          meshes: captureTileMeshes(layer.meshes.filter(mesh => mesh.name !== "buildings")),
+          counts: layer.counts,
+        }));
+        return layer;
+      }),
     ]);
     if (mapResult.status === "rejected") throw mapResult.reason;
     const mapFeatures = mapResult.value;
@@ -1174,6 +1286,7 @@ export class Game {
       return;
     }
     const rockField = vegetationResult.value;
+    stages.begin("props");
     await reportInitializationProgress(onProgress, "Creating map features", 88);
     trace?.stage("map features, boundaries, lamps and commit");
     trace?.stage("plot boundaries");
@@ -1204,6 +1317,12 @@ export class Game {
     // the map root from here on.
     plotBoundaryLayer.root.setEnabled(true);
     streetLampLayer.root.setEnabled(true);
+    stages.finish("props", () => ({ terrain: terrainData, frame: stageFrame,
+      plan: record.roadAndBuildingPlan,
+      meshes: captureTileMeshes([...plotBoundaryLayer.root.getChildMeshes(), ...streetLampLayer.root.getChildMeshes()]
+        .filter((mesh): mesh is Mesh => mesh instanceof Mesh)),
+      boundaries: record.roadAndBuildingPlan.plotBoundaries, lamps: record.roadAndBuildingPlan.streetLamps,
+    }));
     trace?.stage("map commit frame wait");
     await this.streamingYielder.nextFrame();
     trace?.stage("map world matrices/offset");
@@ -1288,6 +1407,7 @@ export class Game {
     ]);
     if (generation !== this.streamingGeneration) return;
     const actorMix = proceduralActorMixAtTile(record.id, this.worldSeed);
+    record.generationStages.begin("vegetation");
     const treeField = await createTreeField(this.scene, record.terrainData, {
       meshWidth: record.meshWidth,
       meshDepth: record.meshDepth,
@@ -1317,6 +1437,10 @@ export class Game {
     setTransformNodeOffset(treeField.root, record.offsetX, record.offsetZ);
     registerStaticMeshCandidates(this.scene, treeField.meshes);
     record.farTreeField = treeField;
+    record.generationStages.finish("vegetation", () => ({ terrain: record.terrainData,
+      frame: { meshWidth: record.meshWidth, meshDepth: record.meshDepth, metersPerUnit },
+      placements: [{ kind: "farTrees", matrices: treeField.instanceMatrices, count: treeField.count }],
+      detail: "Far trees only", actorMix }));
     if (record.detailed) {
       // Pre-built for an upcoming demotion: stays hidden until the tile's full
       // detail cross-fades out.
@@ -1335,6 +1459,16 @@ export class Game {
     return this.buildFarMapLayer(record, generation, "farRoads");
   }
 
+  private captureRetainedFarLayer(record: StreamedTile, kind: "farBuildings" | "farRoads"): void {
+    const stage = kind === "farBuildings" ? "buildings" : "roads-rivers";
+    record.generationStages.begin(stage);
+    record.generationStages.finish(stage, () => ({ terrain: record.terrainData,
+      frame: { meshWidth: record.meshWidth, meshDepth: record.meshDepth, metersPerUnit: this.terrainMetersPerUnit! },
+      plan: record.roadAndBuildingPlan, offset: { x: record.offsetX, z: record.offsetZ },
+      meshes: captureTileMeshes(record[kind]!.getChildMeshes().filter((mesh): mesh is Mesh => mesh instanceof Mesh)),
+    }), "Retained far geometry from an earlier tile revision");
+  }
+
   /** Builds, publishes, and fades one map layer outside the detail rings. */
   private async buildFarMapLayer(
     record: StreamedTile, generation: number, kind: "farBuildings" | "farRoads",
@@ -1347,6 +1481,8 @@ export class Game {
       meshWidth: record.meshWidth, meshDepth: record.meshDepth, metersPerUnit,
       startDisabled: true, planning: record.roadAndBuildingPlan,
     };
+    const stage = kind === "farBuildings" ? "buildings" : "roads-rivers";
+    record.generationStages.begin(stage);
     const layer = kind === "farBuildings"
       ? await OpenStreetMap.createBuildingLayer(this.scene, mapWays, record.terrainData, {
         ...options, showRoofs: this.sceneSettings.value.showRoofs,
@@ -1358,8 +1494,13 @@ export class Game {
       }, this.streamingYielder);
     if (generation !== this.streamingGeneration || record[kind]) {
       OpenStreetMap.disposeLayer(layer.root);
+      record.generationStages.abort("Far layer superseded", true);
       return;
     }
+    record.generationStages.finish(stage, () => ({ terrain: record.terrainData, frame: options,
+      plan: record.roadAndBuildingPlan, meshes: captureTileMeshes(layer.meshes),
+      detail: kind === "farBuildings" ? "Far building massing" : "Far carriageways and bridges; river ribbons deferred",
+    }));
     setTransformNodeOffset(layer.root, record.offsetX, record.offsetZ);
     record[kind] = layer.root;
     registerStaticMeshCandidates(this.scene, layer.root.getChildMeshes());

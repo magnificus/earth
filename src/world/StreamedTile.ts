@@ -12,6 +12,7 @@ import type { WorldTileId } from "./WorldGrid";
 import type { WorldCover } from "./WorldCover";
 import type { HorizontalExclusionMask } from "./Geo";
 import { traceStreamingSynchronous } from "../diagnostics/StreamingDiagnostics";
+import type { TileGeneration } from "./TileGeneration";
 
 export const VEGETATION_FIELD_KINDS = [
   "treeField",
@@ -38,6 +39,8 @@ export interface StreamedTile extends Partial<Record<VegetationFieldKind, Vegeta
   mapTiles?: Promise<MapTile[]>;
   lakeContextTiles?: Promise<MapTile[]>;
   roadAndBuildingPlan: RoadAndBuildingPlan;
+  generationStages: TileGeneration;
+  captureGeneration: boolean;
   terrain: Mesh;
   meshWidth: number;
   meshDepth: number;
